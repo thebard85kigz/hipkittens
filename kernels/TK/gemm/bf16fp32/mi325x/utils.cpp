@@ -55,13 +55,14 @@ __device__ inline void load_global_to_registers(
     const int big_calls_end = big_calls_start + (big_calls / split);
 
     const int row_stride = src.template stride<axis>();
+    const int row_stride_bytes = row_stride * sizeof(T);
     coord<> unit_coord = idx.template unit_coord<axis, 3>();
     T* base_ptr = (T*)&src[unit_coord];  // global memory pointer
     const int laneid = threadIdx.x % N_THREADS;
 
     // buffer resource
     const int total_bytes = row_stride * ST::rows * sizeof(T);
-    i32x4 srsrc = make_srsrc(base_ptr, total_bytes);
+    i32x4 srsrc = make_srsrc(base_ptr, total_bytes, row_stride_bytes);
 
     int buf_idx = 0;
     for (int i = 0; i < big_calls && buf_idx < buffer_size; ++i) {
