@@ -40,8 +40,8 @@ void micro_tk(const micro_globals g) {
     copy(Ref_Out, In_ref);
     __syncthreads();
 
-    G::store(g.out, Out, {0, 0, 0, 0});
     G::store(g.ref_out, Ref_Out, {0, 0, 0, 0});
+    store_linear<2, false>(g.out, Out, {0, 0, 0, 0});
     __syncthreads();
 }
 

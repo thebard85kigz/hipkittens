@@ -110,69 +110,68 @@ __device__ inline void load_global_to_shared_direct(
     const GL& src, const COORD& idx, ST& dst)
 {
     using T = typename ST::dtype;
+    constexpr int vec_len = 16 / sizeof(T);  // e.g., 8 for bf16, 4 for fp32
+    constexpr int vecs_per_row = ST::cols / vec_len;
+    constexpr int total_vecs = ST::rows * vecs_per_row;
+
     const int row_stride = src.template stride<axis>();
-    constexpr int elem_per_memcpy = sizeof(float4)/sizeof(typename ST::dtype);
-    constexpr int elem_per_half_memcpy = sizeof(float2)/sizeof(typename ST::dtype);
-    constexpr int memcpy_per_row = ST::cols / elem_per_memcpy;
-
     coord<> unit_coord = idx.template unit_coord<axis, 3>();
-    typename GL::dtype *src_ptr = (typename GL::dtype*)&src[unit_coord];
+    T* global_ptr = (T*)&src[unit_coord];
+    i32x4 srsrc = make_srsrc(global_ptr, row_stride * ST::rows * sizeof(T));
 
-    uint32_t dst_ptr = reinterpret_cast<uintptr_t>(&dst.data[0]);
+    int thread_id = threadIdx.x % N_THREADS;
 
-    // Set up buffer resource
-    const int total_bytes = row_stride * ST::rows * sizeof(T);
-    int32x4_t srsrc = make_srsrc(src_ptr, total_bytes);
+    for (int i = thread_id; i < total_vecs; i += N_THREADS) {
+        const int row = i / vecs_per_row;
+        const int col = (i % vecs_per_row) * vec_len;
 
-    // Only thread 0 does the loading to avoid work distribution issues
-    if (threadIdx.x == 0) {
-        for (int row = 0; row < ST::rows; row++) {
-            for (int col_group = 0; col_group < memcpy_per_row; col_group++) {
-                int col = col_group * elem_per_memcpy;
-                
-                // Calculate global memory byte offset
-                int global_offset = (row * row_stride + col) * sizeof(T);
-                
-                // Load first half (8 bytes) to dst.idx({row, col})
-                uint32_t lds_offset_1 = dst.idx(dst_ptr, {row, col});
-                as3_uint32_ptr lds_ptr_1 = reinterpret_cast<as3_uint32_ptr>(
-                    reinterpret_cast<uintptr_t>(&dst.data[0]) + lds_offset_1
-                );
-                
-                // Use 4-byte + 4-byte for first 8 bytes
-                llvm_amdgcn_raw_buffer_load_lds(
-                    srsrc, lds_ptr_1, 4, global_offset, 0, 0,
-                    static_cast<index_t>(coherency::cache_all)
-                );
-                llvm_amdgcn_raw_buffer_load_lds(
-                    srsrc, reinterpret_cast<as3_uint32_ptr>(reinterpret_cast<uintptr_t>(lds_ptr_1) + 4), 
-                    4, global_offset + 4, 0, 0,
-                    static_cast<index_t>(coherency::cache_all)
-                );
-                
-                // Load second half (8 bytes) to dst.idx({row, col + elem_per_half_memcpy})
-                uint32_t lds_offset_2 = dst.idx(dst_ptr, {row, col + elem_per_half_memcpy});
-                as3_uint32_ptr lds_ptr_2 = reinterpret_cast<as3_uint32_ptr>(
-                    reinterpret_cast<uintptr_t>(&dst.data[0]) + lds_offset_2
-                );
-                
-                // Use 4-byte + 4-byte for second 8 bytes
-                llvm_amdgcn_raw_buffer_load_lds(
-                    srsrc, lds_ptr_2, 4, global_offset + 8, 0, 0,
-                    static_cast<index_t>(coherency::cache_all)
-                );
-                llvm_amdgcn_raw_buffer_load_lds(
-                    srsrc, reinterpret_cast<as3_uint32_ptr>(reinterpret_cast<uintptr_t>(lds_ptr_2) + 4), 
-                    4, global_offset + 12, 0, 0,
-                    static_cast<index_t>(coherency::cache_all)
-                );
-            }
-        }
+        const int global_elem_offset = row * row_stride + col;
+
+        const T* lds_base = &dst.data[0];
+        const T* lds_elem_ptr = lds_base + row * ST::cols + col;
+        uintptr_t lds_addr = reinterpret_cast<uintptr_t>(lds_elem_ptr);
+        as3_uint32_ptr lds_ptr = (as3_uint32_ptr)(lds_addr);
+
+        llvm_amdgcn_raw_buffer_load_lds(
+            srsrc,
+            lds_ptr,
+            16,
+            global_elem_offset * sizeof(T),
+            0, 0,
+            static_cast<index_t>(coherency::cache_all));
     }
 
-    asm volatile("s_waitcnt vmcnt(0)"); 
-    asm volatile("s_waitcnt lgkmcnt(0)");
     __syncthreads();
+}
+
+template<int axis, bool assume_aligned, ducks::st::all ST, ducks::gl::all GL,
+         ducks::coord::tile COORD = coord<ST>, int N_THREADS = WARP_THREADS>
+__device__ inline void store_linear(const GL &dst, const ST &src, const COORD &idx) {
+    using T = typename ST::dtype;
+    constexpr int vec_len = 16 / sizeof(T);
+    constexpr int vecs_per_row = ST::cols / vec_len;
+    constexpr int total_vecs = ST::rows * vecs_per_row;
+
+    const int row_stride = dst.template stride<axis>();
+    coord<> unit_coord = idx.template unit_coord<axis, 3>();
+    T* dst_ptr = (T*)&dst[unit_coord];
+
+    int thread_id = threadIdx.x % N_THREADS;
+
+    for (int i = thread_id; i < total_vecs; i += N_THREADS) {
+        const int row = i / vecs_per_row;
+        const int col = (i % vecs_per_row) * vec_len;
+
+        const int flat_idx = row * ST::cols + col;
+        const T* lds_ptr = &src.data[flat_idx];
+
+        const int gmem_offset = row * row_stride + col;
+
+        float4 val;
+        memcpy(&val, lds_ptr, 16);
+
+        memcpy(&dst_ptr[gmem_offset], &val, 16);
+    }
 }
 
 
