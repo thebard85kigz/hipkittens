@@ -124,6 +124,7 @@ static constexpr uint64_t MASK_ALL = 0xFFFFFFFFFFFFFFFF;
 template<typename T>
 __device__ static inline T packed_shfl_down(uint64_t mask, const T &f, int delta) {
 
+    #ifdef KITTENS_CDNA4
     if constexpr (std::is_same_v<T, bf16_2> || std::is_same_v<T, bf16>) {
         static_assert(sizeof(__hip_bfloat162) == sizeof(unsigned int));
         union {
@@ -135,6 +136,9 @@ __device__ static inline T packed_shfl_down(uint64_t mask, const T &f, int delta
     } else {
         return __shfl_down(f, delta);
     }
+    #else
+    return __shfl_down(f, delta);
+    #endif
 }
 template<>
 __device__ inline float2 packed_shfl_down<float2>(uint64_t mask, const float2 &f, int delta) {
