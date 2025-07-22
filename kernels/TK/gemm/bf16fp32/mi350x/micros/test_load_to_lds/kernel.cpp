@@ -1,13 +1,10 @@
 #include "kittens.cuh"
 #include "pyutils/pyutils.cuh"
-#include "../utils.cpp"
+#include "../../utils.cpp"
 using namespace kittens;
 
-constexpr int BLOCK_SIZE_ROWS = 256;
-constexpr int BLOCK_SIZE_COLS = 64;
 
-constexpr int TILE_SIZE_ROWS = 64;
-constexpr int TILE_SIZE_COLS = 16;
+constexpr int TILE_SIZE_ROWS = 32;
 
 #define NUM_WARPS 1
 #define NUM_THREADS (kittens::WARP_THREADS * NUM_WARPS)
@@ -30,34 +27,34 @@ __global__ __launch_bounds__(NUM_THREADS, 1)
 void micro_tk(const micro_globals g) {
     extern __shared__ alignment_dummy __shm[];
     shared_allocator al((int*)&__shm[0]);
-    st_bf<BLOCK_SIZE_ROWS, BLOCK_SIZE_COLS> (&In) = al.allocate<st_bf<BLOCK_SIZE_ROWS, BLOCK_SIZE_COLS>>();
+    st_bf<TILE_SIZE_ROWS, TILE_SIZE_ROWS> (&In) = al.allocate<st_bf<TILE_SIZE_ROWS, TILE_SIZE_ROWS>>();
 
-    rt_bf<TILE_SIZE_ROWS, TILE_SIZE_COLS> tile;
+    rt_bf<TILE_SIZE_ROWS, TILE_SIZE_ROWS> tile;
+    rt_bf<TILE_SIZE_ROWS, TILE_SIZE_ROWS, ducks::rt_layout::col> tile_col;
     zero(tile);
+    zero(tile_col);
 
     // global to shared
-    load_global_to_shared_direct<2, false, st_bf<BLOCK_SIZE_ROWS, BLOCK_SIZE_COLS>, _gl_A, coord<st_bf<BLOCK_SIZE_ROWS, BLOCK_SIZE_COLS>>, NUM_THREADS>(g.in, {0, 0, 0, 0}, In);
+    // load(tile, g.in, {0, 0, 0, 0});
+    load_global_to_shared_direct<2, false, st_bf<TILE_SIZE_ROWS, TILE_SIZE_ROWS>, _gl_A, coord<st_bf<TILE_SIZE_ROWS, TILE_SIZE_ROWS>>, NUM_THREADS>(g.in, {0, 0, 0, 0}, In);
     __builtin_amdgcn_s_waitcnt(0);
     __builtin_amdgcn_s_barrier();
     __builtin_amdgcn_sched_barrier(0);
     __syncthreads();
 
     // shared to registers
-    const int cols = BLOCK_SIZE_COLS / TILE_SIZE_COLS;
-    const int rows = BLOCK_SIZE_ROWS / TILE_SIZE_ROWS;
-    for (int i = 0; i < rows; i++) {
-        for (int j = 0; j < cols; j++) {
-            load_lds_reg(tile, subtile_inplace<TILE_SIZE_ROWS, TILE_SIZE_COLS>(In, {i, j}));
-            __builtin_amdgcn_s_waitcnt(0);
-            __builtin_amdgcn_s_barrier();
-            __builtin_amdgcn_sched_barrier(0);
-            __syncthreads();
+    load_lds_reg(tile, In);
+    __builtin_amdgcn_s_waitcnt(0);
+    __builtin_amdgcn_s_barrier();
+    __builtin_amdgcn_sched_barrier(0);
+    __syncthreads();
 
-            // register to global
-            store(g.out, tile, {0, 0, i, j});
-            __syncthreads();
-        }
-    }
+    __builtin_amdgcn_s_barrier();
+    __builtin_amdgcn_sched_barrier(0);
+    __syncthreads();    
+
+    store(g.out, tile, {0, 0, 0, 0});
+    __syncthreads();
 }
 
 void dispatch_micro(micro_globals g) {
