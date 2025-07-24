@@ -61,13 +61,14 @@ __global__ void attend_ker(const attn_globals<D> g) {
     // Initialize all of the register tiles.
     qkvo_tile<D, bf16> q_reg, k_reg; // Q and K are both row layout, as we use mma_ABt.
     qkvo_tile<D, bf16, col_l> v_reg; // V is column layout, as we use mma_AB.
-    qkvo_tile<D, float> o_reg; // Output tile.
+    qkvo_tile<D, float, col_l> o_reg; // Output tile.
     qkvo_tile<D, float, accum_l> o_reg_next; // attention tile, in float, for the mma_AB.
-    qkvo_tile<D, float> o_reg_next_row; // attention tile, in float, for the mma_AB.
+    qkvo_tile<D, float, col_l> o_reg_next_col; // attention tile, in float, for the mma_AB.
     attn_tile<D, float, accum_l> att_block; // attention tile, in float. (We want to use float wherever possible.)
-    attn_tile<D, float> att_block_row; 
-    attn_tile<D, bf16> att_block_row_bf16; // bf16 attention tile in row layout for the second mma_AB.
-    typename attn_tile<D, float, row_l>::col_vec max_vec_last, max_vec, max_vec_new, norm_vec_last, norm_vec, norm_vec_new; // these are column vectors for the online softmax.
+    attn_tile<D, float, col_l> att_block_col; 
+    attn_tile<D, bf16, col_l> att_block_col_bf16; // bf16 attention tile for the second mma_AB. We cast right before that op.
+    attn_tile<D, bf16, row_l> att_block_row_bf16; // bf16 attention tile in row layout for the second mma_AB.
+    typename attn_tile<D, float, col_l>::col_vec max_vec_last, max_vec, max_vec_new, norm_vec_last, norm_vec, norm_vec_new; // these are column vectors for the online softmax.
 
     // 5. Given i = blockIdx.x, load Q_i from global to registers. Set O_i = 0, l_i = 0, m_i = -inf.
     zero(o_reg);
@@ -94,18 +95,18 @@ __global__ void attend_ker(const attn_globals<D> g) {
 
         // 8. Compute S_ij = Q_i @ K_j.T (16x16)
         mma_ABt(att_block, q_reg, k_reg, att_block);
-        att_block_row = swap_layout_inplace<row_l>(att_block);
-        mul(att_block_row, att_block_row, scale_factor);
+        swap_layout(att_block_col, att_block);
+        mul(att_block_col, att_block_col, scale_factor);
 
         // 9. Compute m'_ij = row_max(S_ij) (16x1)
-        row_max(max_vec, att_block_row);
+        row_max(max_vec, att_block_col);
 
         // 10. p'_ij = exp(S_ij - m'_ij) (16x16)
-        sub_row(att_block_row, att_block_row, max_vec);
-        exp(att_block_row, att_block_row);
+        sub_row(att_block_col, att_block_col, max_vec);
+        exp(att_block_col, att_block_col);
 
         // 11. l'_ij = row_sum(p'_ij) (16x1)
-        row_sum(norm_vec, att_block_row);
+        row_sum(norm_vec, att_block_col);
 
         // 12. Compute m_i_new = max(m_i, m'_ij) (16x1)
         max(max_vec_new, max_vec_last, max_vec);
@@ -123,11 +124,12 @@ __global__ void attend_ker(const attn_globals<D> g) {
 
         // 14.  O_i = exp(m_i - m_i_new) @ O_i + exp(m'_ij - m_i_new) * P'_ij @ V_j (16x64)
         mul_row(o_reg, o_reg, max_vec_last);
-        copy(att_block_row_bf16, att_block_row);    
+        copy(att_block_col_bf16, att_block_col);
+        swap_layout(att_block_row_bf16, att_block_col_bf16);
         mma_AB(o_reg_next, att_block_row_bf16, v_reg, o_reg_next);
-        o_reg_next_row = swap_layout_inplace<row_l>(o_reg_next);
-        mul_row(o_reg_next_row, o_reg_next_row, max_vec);
-        add(o_reg, o_reg, o_reg_next_row);
+        swap_layout(o_reg_next_col, o_reg_next);
+        mul_row(o_reg_next_col, o_reg_next_col, max_vec);
+        add(o_reg, o_reg, o_reg_next_col);
 
         // 15. l_i = l_i_new, m_i = m_i_new
         copy(max_vec_last, max_vec_new);

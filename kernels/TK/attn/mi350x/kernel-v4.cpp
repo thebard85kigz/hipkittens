@@ -106,7 +106,7 @@ void attend_ker(const attn_globals g) {
         //  Compute Q_i @ K_j.T 
         __builtin_amdgcn_s_setprio(1);
         mma_ABt(att_block, q_reg, k_reg, att_block);
-        att_block_col = swap_layout_inplace(att_block);
+        att_block_col = swap_layout_inplace<col_l>(att_block);
         __builtin_amdgcn_s_setprio(0);
         __builtin_amdgcn_s_barrier();
 
@@ -133,7 +133,7 @@ void attend_ker(const attn_globals g) {
         att_block_row_bf16 = swap_layout_inplace(att_block_col_bf16);
         __builtin_amdgcn_s_setprio(1);
         mma_AB(o_reg_next, att_block_row_bf16, v_reg, o_reg_next);
-        o_reg_next_col = swap_layout_inplace(o_reg_next);
+        o_reg_next_col = swap_layout_inplace<col_l>(o_reg_next);
         __builtin_amdgcn_s_setprio(0);
         __builtin_amdgcn_s_barrier();
         
