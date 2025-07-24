@@ -7,7 +7,7 @@ constexpr int ATTN_B = 16; // batch size
 constexpr int ATTN_H = 16; // number of heads
 constexpr int ATTN_N = 4096; // sequence length
 constexpr int ATTN_D = 64; // dimension
-constexpr int N_STEP = 64;
+constexpr int N_STEP = 128;
 constexpr int SUB_N_STEP = 32;
 constexpr int BLOCK_SIZE = 32; // block size
 
@@ -76,7 +76,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
     attn_tile<D, float, accum_l> att_block; // attention tile, in float. (We want to use float wherever possible.)
     attn_tile<D, float> att_block_row;
     attn_tile<D, bf16> att_block_row_bf16;
-    typename attn_tile<D, float, accum_l>::col_vec max_vec_last, max_vec, max_vec_new, norm_vec_last, norm_vec, norm_vec_new; // these are column vectors for the online softmax.
+    typename attn_tile<D, float, accum_l>::col_vec max_vec_last, max_vec, max_vec_new, norm_vec_last, norm_vec; // these are column vectors for the online softmax.
 
     int tic = 0, toc = 1;
     load_global_to_shared_direct<2, false, st_bf<N_STEP, ATTN_D>, _gl_QKVO, coord<st_bf<N_STEP,ATTN_D>>, NUM_THREADS>(
@@ -88,7 +88,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
     zero(o_reg);
     zero(norm_vec_last);
     zero(norm_vec);
-    zero(norm_vec_new);
     neg_infty(max_vec_last);
     neg_infty(max_vec);
     neg_infty(max_vec_new);
@@ -144,7 +143,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
 
             mul(norm_vec_last, max_vec_last, norm_vec_last);
             mul(norm_vec, max_vec, norm_vec);
-            add(norm_vec_new, norm_vec_last, norm_vec);
+            add(norm_vec_last, norm_vec_last, norm_vec);
 
             // 14.  O_i = exp(m_i - m_i_new) @ O_i + exp(m'_ij - m_i_new) * P'_ij @ V_j (16x64)
             mul_row(o_reg, o_reg, max_vec_last);
@@ -156,7 +155,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
 
             // 15. l_i = l_i_new, m_i = m_i_new
             copy(max_vec_last, max_vec_new);
-            copy(norm_vec_last, norm_vec_new);
         }
     }
 
@@ -199,7 +197,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
 
         mul(norm_vec_last, max_vec_last, norm_vec_last);
         mul(norm_vec, max_vec, norm_vec);
-        add(norm_vec_new, norm_vec_last, norm_vec);
+        add(norm_vec_last, norm_vec_last, norm_vec);
 
         // 14.  O_i = exp(m_i - m_i_new) @ O_i + exp(m'_ij - m_i_new) * P'_ij @ V_j (16x64)
         mul_row(o_reg, o_reg, max_vec_last);
@@ -211,7 +209,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
 
         // 15. l_i = l_i_new, m_i = m_i_new
         copy(max_vec_last, max_vec_new);
-        copy(norm_vec_last, norm_vec_new);
     }
 
     // 16. O_i = diag(l_i)^-1 @ O_i
