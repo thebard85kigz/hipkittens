@@ -113,22 +113,7 @@ namespace kittens {
         }
     }
 
-    dst.data[0].x = dst_tmp[0];
-    dst.data[0].y = dst_tmp[1];
-    dst.data[1].x = dst_tmp[2];
-    dst.data[1].y = dst_tmp[3];
-    dst.data[2].x = dst_tmp[4];
-    dst.data[2].y = dst_tmp[5];
-    dst.data[3].x = dst_tmp[6];
-    dst.data[3].y = dst_tmp[7];
-    dst.data[4].x = dst_tmp[8];
-    dst.data[4].y = dst_tmp[9];
-    dst.data[5].x = dst_tmp[10];
-    dst.data[5].y = dst_tmp[11];
-    dst.data[6].x = dst_tmp[12];
-    dst.data[6].y = dst_tmp[13];
-    dst.data[7].x = dst_tmp[14];
-    dst.data[7].y = dst_tmp[15];
+    memcpy(&dst.data[0], &dst_tmp[0], sizeof(dst.data));
  }
  #endif
 
