@@ -305,4 +305,45 @@ __device__ inline static void load_lds_reg(RT &dst, const ST &src) {
 }
 
 
+template<typename T2, int _rows, int _cols, ducks::rt_layout::classic layout>
+__device__ static inline rt<T2, _cols, _rows, typename ducks::rt_layout::transpose<layout>::type>& swap_layout_and_transpose_inplace(rt<T2, _rows, _cols, layout> &tile) {
+    return *(rt<T2, _cols, _rows, typename ducks::rt_layout::transpose<layout>::type>*)(&tile);
+}
+
+template<int axis, ducks::rt::accumulator_layout RT, ducks::gl::all GL, ducks::coord::tile COORD=coord<RT>>
+__device__ inline static void store_transposed(const GL &dst, const RT &src, const COORD &idx) {
+    using T = base_types::packing<typename RT::dtype>::unpacked_type;
+    using U = typename GL::dtype;
+
+    U *dst_ptr = (U*)&dst[(idx.template unit_coord<axis, 3>())];
+    const int row_stride = dst.template stride<axis>();
+    int laneid = kittens::laneid();
+
+    int col_offset = laneid/32;
+    int row_offset = laneid%32;
+
+    #pragma unroll
+    for(int i = 0; i < src.height; i++) {
+        int row = src.tile_size_row*i + row_offset;
+        #pragma unroll
+        for(int j = 0; j < src.width; j++) {
+            #pragma unroll
+            for (int jj = 0; jj < 4; jj++) {
+                int col = src.tile_size_col*j + jj * 8 + col_offset * 4;
+
+                dst_ptr[row*row_stride + col + 0] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[jj * 2].x);
+                dst_ptr[row*row_stride + col + 1] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[jj * 2].y);
+                dst_ptr[row*row_stride + col + 2] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[jj * 2 + 1].x);
+                dst_ptr[row*row_stride + col + 3] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[jj * 2 + 1].y);
+            }
+        }
+    }
+}
+
+template<ducks::rt::all RT, ducks::gl::all GL, ducks::coord::tile COORD=coord<RT>>
+__device__ inline static void store_transposed(const GL &dst, const RT &src, const COORD &idx) {
+    store_transposed<2, RT, GL, COORD>(dst, src, idx);
+}
+
+
 
