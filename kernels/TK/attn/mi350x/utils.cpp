@@ -328,19 +328,19 @@ __device__ inline static void load_lds_reg_col(RT &dst, const ST &src) {
         for(int j = 0; j < dst.width; j++) {
             int col = j*dst.tile_size_col + col_offset;
 
+            uint32_t addr0 = src.idx(src_ptr, {row_offset, col});
+            uint32_t addr1 = src.idx(src_ptr, {row_offset + 4, col});
             #pragma unroll
             for(int i = 0; i < dst.height; i++) {
                 int row = i*dst.tile_size_row + row_offset;
 
-                uint32_t addr0 = src.idx(src_ptr, {row, col});
-                uint32_t addr1 = src.idx(src_ptr, {row + 4, col});
                 asm volatile(
-                    "ds_read_b64_tr_b16 %0, %2\n"
-                    "ds_read_b64_tr_b16 %1, %3\n"
+                    "ds_read_b64_tr_b16 %0, %2 offset:%4\n"
+                    "ds_read_b64_tr_b16 %1, %3 offset:%4\n"
                     : "=v"(*reinterpret_cast<float2*>(&dst.tiles[i][j].data[k*4])), 
                     "=v"(*reinterpret_cast<float2*>(&dst.tiles[i][j].data[k*4 + 2]))
-                    : "v"(addr0),
-                    "v"(addr1)
+                    : "v"(addr0), "v"(addr1),
+                    "i"(i * ST::underlying_cols * kittens::TILE_ROW_DIM<U> * sizeof(U))
                     : "memory"
                 );  
             }

@@ -52,7 +52,7 @@ template<int D> struct attn_globals {
     size_t dynamic_shared_memory() { return MAX_SHARED_MEMORY - 32768; }
 };
 
-template<int D> __launch_bounds__(NUM_THREADS, 0)
+template<int D> __launch_bounds__(NUM_THREADS, 2)
 __global__ void attend_ker(const attn_globals<D> g) {
 
     extern __shared__ alignment_dummy __shm[];
@@ -84,10 +84,10 @@ __global__ void attend_ker(const attn_globals<D> g) {
     typename attn_tile<D, float, accum_l>::row_vec max_vec, norm_vec, max_vec_prev;
 
     int tic = 0, toc = 1;
-    using T = typename st_bf<BLOCK_SIZE, ATTN_D>::dtype;
+    using T = typename st_bf<N_STEP, ATTN_D>::dtype;
     constexpr int bytes_per_thread = 16;
     constexpr int bytes_per_memcpy = bytes_per_thread * NUM_THREADS;
-    constexpr int memcpy_per_tile = BLOCK_SIZE * ATTN_D * sizeof(T) / bytes_per_memcpy;
+    constexpr int memcpy_per_tile = N_STEP * ATTN_D * sizeof(T) / bytes_per_memcpy;
 
     load_global_to_shared_direct<2, false, st_bf<N_STEP, ATTN_D>, _gl_QKVO, coord<st_bf<N_STEP,ATTN_D>>, NUM_THREADS>(
         g.Kg, {batch_idx, head_idx, 0, 0}, k_smem[tic]);
@@ -98,7 +98,6 @@ __global__ void attend_ker(const attn_globals<D> g) {
     uint32_t swizzled_offsets_K[memcpy_per_tile];
     prefill_swizzled_offsets<2, false, st_bf<N_STEP, ATTN_D>, _gl_QKVO, coord<st_bf<N_STEP, ATTN_D>>, NUM_THREADS>(g.Kg, {batch_idx, head_idx, 0, 0}, k_smem[tic], swizzled_offsets_K);
     prefill_swizzled_offsets<2, false, st_bf<N_STEP, ATTN_D>, _gl_QKVO, coord<st_bf<N_STEP, ATTN_D>>, NUM_THREADS>(g.Vg, {batch_idx, head_idx, 0, 0}, v_smem[tic], swizzled_offsets_V);
-    __builtin_amdgcn_s_barrier();
 
     // Pre-scale Q by temperature
     qkvo_tile<D, float> q_reg_fl;
