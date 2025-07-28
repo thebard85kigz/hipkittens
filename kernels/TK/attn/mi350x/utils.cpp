@@ -262,32 +262,30 @@ __device__ inline static void load_lds_reg(RT &dst, const ST &src) {
     #pragma unroll 
     for (int k = 0; k < 2; k++) {
 
+        if constexpr (std::is_same_v<typename RT::layout, ducks::rt_layout::row>) {
+            col_offset = col_offset + k*16;
+        }
+        else {
+            row_offset = row_offset + k*16;
+        }
+
         #pragma unroll
         for(int j = 0; j < dst.width; j++) {
 
-            int col = 0;
-            if constexpr (std::is_same_v<typename RT::layout, ducks::rt_layout::row>) {
-                col = j*dst.tile_size_col + col_offset + k*16;
-            } else {
-                col = j*dst.tile_size_col + col_offset;
-            }
+            int col = j*dst.tile_size_col + col_offset;
 
             uint32_t addr = src.idx(src_ptr, {row_offset, col});
 
             #pragma unroll
             for(int i = 0; i < dst.height; i++) {
 
-                int row = 0;
-                if constexpr (std::is_same_v<typename RT::layout, ducks::rt_layout::row>) { 
-                    row = i*dst.tile_size_row + row_offset;
-                } else {
-                    row = i*dst.tile_size_row + row_offset + k*16;
-                }
+                int row = i*dst.tile_size_row + row_offset;
 
                 if constexpr (std::is_same_v<typename RT::layout, ducks::rt_layout::row>) { // handle the row-major layout
 
                     asm volatile(
                         "ds_read_b128 %0, %1 offset:%2\n"
+                        "s_waitcnt lgkmcnt(0)\n"
                         : "=v"(*reinterpret_cast<float4*>(&dst.tiles[i][j].data[k*4]))
                         : "v"(addr), "i"(i * ST::underlying_cols * kittens::TILE_ROW_DIM<U> * sizeof(U))
                         : "memory"
@@ -299,6 +297,54 @@ __device__ inline static void load_lds_reg(RT &dst, const ST &src) {
                     dst.tiles[i][j].data[2+k*4] = base_types::convertor<T2, U2>::convert(U2{src[{row+4, col}], src[{row+5, col}]});
                     dst.tiles[i][j].data[3+k*4] = base_types::convertor<T2, U2>::convert(U2{src[{row+6, col}], src[{row+7, col}]});
                 }
+            }
+        }
+    }
+}
+
+template<ducks::rt::col_layout RT, ducks::st::all ST>
+__device__ inline static void load_lds_reg_col(RT &dst, const ST &src) {
+
+    static_assert(RT::height == ST::height, "register tile and shared tile must match height");
+    static_assert(RT::width  == ST::width,  "register tile and shared tile must match width");
+
+    using T2 = RT::dtype;
+    using T  = base_types::packing<T2>::unpacked_type;
+    using U  = ST::dtype;
+    using U2 = base_types::packing<U >::packed_type;
+    static_assert(sizeof(U) == 2, "only supporting 16-bit dtypes");
+
+    const int laneid = kittens::laneid();
+    const uint32_t src_ptr = reinterpret_cast<uintptr_t>(&src.data[0]);
+
+    int row_offset, col_offset;
+    row_offset = (laneid % 16) / 4 + (laneid / 32) * 8;
+    col_offset = ((laneid % 4) * 4) + 16*((laneid % 32)/16);
+
+    #pragma unroll 
+    for (int k = 0; k < 2; k++) {
+        row_offset = row_offset + k*16;
+
+        #pragma unroll
+        for(int j = 0; j < dst.width; j++) {
+            int col = j*dst.tile_size_col + col_offset;
+
+            #pragma unroll
+            for(int i = 0; i < dst.height; i++) {
+                int row = i*dst.tile_size_row + row_offset;
+
+                uint32_t addr0 = src.idx(src_ptr, {row, col});
+                uint32_t addr1 = src.idx(src_ptr, {row + 4, col});
+                asm volatile(
+                    "ds_read_b64_tr_b16 %0, %2\n"
+                    "ds_read_b64_tr_b16 %1, %3\n"
+                    "s_waitcnt lgkmcnt(0)\n"
+                    : "=v"(*reinterpret_cast<float2*>(&dst.tiles[i][j].data[k*4])), 
+                    "=v"(*reinterpret_cast<float2*>(&dst.tiles[i][j].data[k*4 + 2]))
+                    : "v"(addr0),
+                    "v"(addr1)
+                    : "memory"
+                );  
             }
         }
     }
