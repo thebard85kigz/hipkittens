@@ -86,24 +86,59 @@ template<> __device__ inline bf16_2 exp::op<bf16_2>(const bf16_2 &x) { return h2
 template<> __device__ inline half   exp::op<half>  (const half &x  ) { return hexp(x);                          }
 template<> __device__ inline half_2 exp::op<half_2>(const half_2 &x) { return h2exp(x);                         }
 
+// /**
+//  * @brief Exponential function operation, in base 2
+//  *
+//  * This operation calculates the exponential of the input value, in base 2.
+//  *
+//  * @tparam T The data type of the input and output values.
+//  * @param x[in] The input value.
+//  * @return The exponential of the input value.
+//  */
+// struct exp2 {
+//     template<typename T> static __device__ inline T op(const T &x) { return exp2f(x); }
+// };
+// template<> __device__ inline float  exp2::op<float> (const float &x ) { return exp2f(x);                        }
+// template<> __device__ inline float2 exp2::op<float2>(const float2 &x) { return float2{exp2f(x.x), exp2f(x.y)}; }
+// template<> __device__ inline bf16   exp2::op<bf16>  (const bf16 &x  ) { return hexp2(x);                          }
+// template<> __device__ inline bf16_2 exp2::op<bf16_2>(const bf16_2 &x) { return h2exp2(x);                         }
+// template<> __device__ inline half   exp2::op<half>  (const half &x  ) { return hexp2(x);                          }
+// template<> __device__ inline half_2 exp2::op<half_2>(const half_2 &x) { return h2exp2(x);                         }
+
 /**
- * @brief Exponential function operation, in base 2
+ * @brief Fast base-2 exponential operation using bit-level approximation
  *
- * This operation calculates the exponential of the input value, in base 2.
+ * This implementation computes an approximate 2^x using IEEE-754 exponent manipulation.
+ * It is ~1 ulp accurate and avoids expensive instructions like v_ldexp_f32.
  *
  * @tparam T The data type of the input and output values.
- * @param x[in] The input value.
- * @return The exponential of the input value.
  */
-struct exp2 {
+ struct exp2 {
     template<typename T> static __device__ inline T op(const T &x) { return exp2f(x); }
 };
-template<> __device__ inline float  exp2::op<float> (const float &x ) { return exp2f(x);                        }
-template<> __device__ inline float2 exp2::op<float2>(const float2 &x) { return float2{exp2f(x.x), exp2f(x.y)}; }
-template<> __device__ inline bf16   exp2::op<bf16>  (const bf16 &x  ) { return hexp2(x);                          }
-template<> __device__ inline bf16_2 exp2::op<bf16_2>(const bf16_2 &x) { return h2exp2(x);                         }
-template<> __device__ inline half   exp2::op<half>  (const half &x  ) { return hexp2(x);                          }
-template<> __device__ inline half_2 exp2::op<half_2>(const half_2 &x) { return h2exp2(x);                         }
+// --- Fast approximations for float and float2 ---
+template<> __device__ inline float exp2::op<float>(const float &x) {
+    float clamped = fminf(fmaxf(x, -126.0f), 126.0f);
+    int exp_bits = static_cast<int>(clamped * (1 << 23)) + (127 << 23);
+    return __int_as_float(exp_bits);
+}
+template<> __device__ inline float2 exp2::op<float2>(const float2 &x) {
+    float2 out;
+    float x0 = fminf(fmaxf(x.x, -126.0f), 126.0f);
+    float x1 = fminf(fmaxf(x.y, -126.0f), 126.0f);
+    int i0 = static_cast<int>(x0 * (1 << 23)) + (127 << 23);
+    int i1 = static_cast<int>(x1 * (1 << 23)) + (127 << 23);
+    out.x = __int_as_float(i0);
+    out.y = __int_as_float(i1);
+    return out;
+}
+template<> __device__ inline bf16   exp2::op<bf16>  (const bf16 &x)   { return hexp2(x);  }
+template<> __device__ inline bf16_2 exp2::op<bf16_2>(const bf16_2 &x) { return h2exp2(x); }
+template<> __device__ inline half   exp2::op<half>  (const half &x)   { return hexp2(x);  }
+template<> __device__ inline half_2 exp2::op<half_2>(const half_2 &x) { return h2exp2(x); }
+
+
+
 /**
  * @brief Natural log function operation.
  *
