@@ -22,10 +22,10 @@ torch.set_printoptions(
 
 # Inputs
 B = 16
-H = 16
-H_KV = 16
-N = 4096
-D = 64
+H = 64
+H_KV = 8
+N = 8192
+D = 128
 causal = False
 dtype = torch.bfloat16
 q = torch.randn(B, N, H, D, dtype=dtype, device='cuda', requires_grad=True)
@@ -125,12 +125,12 @@ if profiling:
     # Reference matmul using AITER
     if using_aiter:
         for _ in range(num_warmup):
-            out_ref = flash_attn_func(q, k, v)
+            out_ref = flash_attn_func(q, k, v, causal=causal, return_lse=True, deterministic=True)
         timings_ref = []
         for _ in range(num_iters):
             torch.cuda.synchronize()
             start_event.record()
-            out_ref = flash_attn_func(q, k, v)
+            out_ref = flash_attn_func(q, k, v, causal=causal, return_lse=True, deterministic=True)
             end_event.record()
             torch.cuda.synchronize()
             elapsed_time = start_event.elapsed_time(end_event)
