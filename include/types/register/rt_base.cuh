@@ -56,15 +56,15 @@ template<typename _T, ducks::rt_layout::all _layout> struct rt_base {
         "rt_base was provided an unsupported type."
     );
 
-    static constexpr int tile_size_row        = kittens::TILE_ROW_DIM<T>; // < Tile size is a constant 16 for everyone
+    static constexpr int tile_size_row        = kittens::TILE_ROW_DIM<T>;
     static constexpr int tile_size_col        = kittens::TILE_COL_DIM<T>;
     static constexpr int rows                 = tile_size_row; ///< Number of rows.
     static constexpr int cols                 = tile_size_col; ///< Number of cols.
-    static constexpr int num_elements         = rows*cols; // 1024 (512 for fp8e4m3 on CDNA3)
-    static constexpr int elements_per_thread  = num_elements / kittens::WARP_THREADS; // 16 (8 for fp8e4m3 on CDNA3)
+    static constexpr int num_elements         = rows*cols; // 1024 on CDNA4 (for fp8: 512 on CDNA3, 2048 on CDNA4)
+    static constexpr int elements_per_thread  = num_elements / kittens::WARP_THREADS; // 16 on CDNA4 (for fp8: 8 on CDNA3, 32 on CDNA4)
 
-    static constexpr int packed_per_thread    = (elements_per_thread / base_types::packing<dtype>::num()) ; // 2
-    static constexpr int registers_per_thread = packed_per_thread * sizeof(dtype) / 4; // 2 or 4, registers are 32-bit words
+    static constexpr int packed_per_thread    = (elements_per_thread / base_types::packing<dtype>::num()) ; // 8 on CDNA4
+    static constexpr int registers_per_thread = packed_per_thread * sizeof(dtype) / 4; // 8 on CDNA4, registers are 32-bit words
 
     using row_vec_layout = std::conditional_t<std::is_same_v<layout, ducks::rt_layout::row>, ducks::rv_layout::align, ducks::rv_layout::ortho>; // for holding column reductions
     using col_vec_layout = std::conditional_t<std::is_same_v<layout, ducks::rt_layout::row>, ducks::rv_layout::ortho, ducks::rv_layout::align>; // for holding row reductions
@@ -98,5 +98,5 @@ template<typename T> concept all = requires {
 template<ducks::rt_layout::all L=ducks::rt_layout::row> using rt_base_fl = rt_base<float, L>;
 template<ducks::rt_layout::all L=ducks::rt_layout::row> using rt_base_bf = rt_base<bf16, L>;
 template<ducks::rt_layout::all L=ducks::rt_layout::row> using rt_base_hf = rt_base<half, L>;
-template<ducks::rt_layout::all L=ducks::rt_layout::row> using rt_base_fl8_e4m3 = rt_base<fp8e4m3, L>;
+template<ducks::rt_layout::all L=ducks::rt_layout::row> using rt_base_fp8e4m3 = rt_base<fp8e4m3, L>;
 }

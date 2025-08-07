@@ -37,6 +37,20 @@ using bf16_2 = __hip_bfloat162;
  * @brief Packed word of two half-precision floating-point values.
  */
 using half_2 = __half2;
+#ifdef KITTENS_CDNA4
+/**
+ * @brief float8 floating-point type.
+ */
+using fp8e4m3 = __hip_fp8_e4m3;
+/**
+ * @brief Packed word of two float8 floating-point values.
+ */
+using fp8e4m3_2 = __hip_fp8x2_e4m3;
+/**
+ * @brief Packed word of four float8 floating-point values.
+ */
+using fp8e4m3_4 = __hip_fp8x4_e4m3;
+#else
 /**
  * @brief float8 floating-point type.
  */
@@ -49,6 +63,7 @@ using fp8e4m3_2 = __hip_fp8x2_e4m3_fnuz;
  * @brief Packed word of four float8 floating-point values.
  */
 using fp8e4m3_4 = __hip_fp8x4_e4m3_fnuz;
+#endif
 
 namespace ducks {
 /**
@@ -142,7 +157,6 @@ template<> struct constants<fp8e4m3_4> {
     static __device__ inline constexpr fp8e4m3_4 zero() { return std::bit_cast<fp8e4m3_4>(uint32_t(0x00000000)); }
     static __device__ inline constexpr fp8e4m3_4 one() { return std::bit_cast<fp8e4m3_4>(uint32_t(0x38383838)); }
 };
-
 template<> struct constants<int> {
     static __device__ inline constexpr int zero()      { return 0; }
     static __device__ inline constexpr int one()       { return 1; }
@@ -279,23 +293,23 @@ template<> struct convertor<float2, bf16_2> {
         return 	__bfloat1622float2(u);
     }
 };
-// template<> struct convertor<bf16_2, float2> {
-//     static __host__ __device__ inline bf16_2 convert(const float2 &u) {
-//         return bf16_2{
-//             std::bit_cast<bf16>(static_cast<uint16_t>(std::bit_cast<uint32_t>(u.x) >> 16)),
-//             std::bit_cast<bf16>(static_cast<uint16_t>(std::bit_cast<uint32_t>(u.y) >> 16))
-//         };
-//     }
-// };
 template<> struct convertor<bf16_2, float2> {
     static __host__ __device__ inline bf16_2 convert(const float2 &u) {
-        uint32_t result;
-        asm volatile("v_cvt_pk_bf16_f32 %0, %1, %2" 
-                     : "=v"(result) 
-                     : "v"(u.x), "v"(u.y));
-        return *reinterpret_cast<bf16_2*>(&result);
+        return bf16_2{
+            std::bit_cast<bf16>(static_cast<uint16_t>(std::bit_cast<uint32_t>(u.x) >> 16)),
+            std::bit_cast<bf16>(static_cast<uint16_t>(std::bit_cast<uint32_t>(u.y) >> 16))
+        };
     }
 };
+// template<> struct convertor<bf16_2, float2> {
+//     static __host__ __device__ inline bf16_2 convert(const float2 &u) {
+//         uint32_t result;
+//         asm volatile("v_cvt_pk_bf16_f32 %0, %1, %2"
+//                      : "=v"(result)
+//                      : "v"(u.x), "v"(u.y));
+//         return *reinterpret_cast<bf16_2*>(&result);
+//     }
+// };
 
 
 template<> struct convertor<float, half> {
@@ -340,29 +354,29 @@ template<> struct convertor<half_2, bf16_2> {
 };
 template<> struct convertor<fp8e4m3_4, float4> {
     static __host__ __device__ inline fp8e4m3_4 convert(const float4& u) {
-        return __hip_fp8x4_e4m3_fnuz(u);
+        return fp8e4m3_4(u);
     }
 };
 template<> struct convertor<float4, fp8e4m3_4> {
     static __host__ __device__ inline float4 convert(const fp8e4m3_4& u) {
-        __hip_fp8_e4m3_fnuz *vals = reinterpret_cast<__hip_fp8_e4m3_fnuz*>(const_cast<__hip_fp8x4_e4m3_fnuz*>(&u));
+        fp8e4m3 *vals = reinterpret_cast<fp8e4m3*>(const_cast<fp8e4m3_4*>(&u));
         return make_float4(float(vals[0]), float(vals[1]), float(vals[2]), float(vals[3]));
     }
 };
 template<> struct convertor<fp8e4m3_2, float2> {
     static __host__ __device__ inline fp8e4m3_2 convert(const float2& u) {
-        return __hip_fp8x2_e4m3_fnuz(u);
+        return fp8e4m3_2(u);
     }
 };
 template<> struct convertor<float2, fp8e4m3_2> {
     static __host__ __device__ inline float2 convert(const fp8e4m3_2& u) {
-        __hip_fp8_e4m3_fnuz *vals = reinterpret_cast<__hip_fp8_e4m3_fnuz*>(const_cast<__hip_fp8x2_e4m3_fnuz*>(&u));
+        fp8e4m3 *vals = reinterpret_cast<fp8e4m3*>(const_cast<fp8e4m3_2*>(&u));
         return make_float2(float(vals[0]), float(vals[1]));
     }
 };
 template<> struct convertor<fp8e4m3, float> {
     static __host__ __device__ inline fp8e4m3 convert(const float & u) {
-        return __hip_fp8_e4m3_fnuz(u);
+        return fp8e4m3(u);
     }
 };
 template<> struct convertor<float, fp8e4m3> {

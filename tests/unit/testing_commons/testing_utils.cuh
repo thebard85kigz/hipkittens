@@ -131,7 +131,7 @@ void initialize(T1 **d_i, T2 **d_o, std::vector<float> &i_ref, std::vector<float
             i_ref[idx] = __half2float(i_t[idx]);
         }
         else if constexpr (std::is_same_v<T1, fp8e4m3>) {
-            i_t[idx] = __hip_fp8_e4m3_fnuz(f);
+            i_t[idx] = fp8e4m3(f);
             i_ref[idx] = float(i_t[idx]);
         }
         else {
@@ -179,7 +179,7 @@ test_result validate(T1 *d_i, T2 *d_o, const std::vector<float> &i_ref, std::vec
         }
         else if constexpr (std::is_same_v<T2, fp8e4m3>) {
             o[idx] = float(o_t[idx]);
-            o_ref[idx] = float(__hip_fp8_e4m3_fnuz(o_ref[idx]));
+            o_ref[idx] = float(fp8e4m3(o_ref[idx]));
         }
         else {
             assert(false && "Unsupported data type");

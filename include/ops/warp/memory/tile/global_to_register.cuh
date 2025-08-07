@@ -34,6 +34,7 @@ __device__ inline i32x4 make_srsrc(const void* ptr, uint32_t range_bytes, uint32
 template<int axis, ducks::rt::row_layout RT, ducks::gl::all GL, ducks::coord::tile COORD=coord<RT>>
 __device__ inline static void load(RT &dst, const GL &src, const COORD &idx) {
     using T2 = RT::dtype;
+    using T = base_types::packing<T2>::unpacked_type;
     using U = typename GL::dtype;
     using U2 = base_types::packing<U>::packed_type;
 
@@ -42,11 +43,11 @@ __device__ inline static void load(RT &dst, const GL &src, const COORD &idx) {
     int laneid = kittens::laneid();
 
     #ifdef KITTENS_CDNA4
-    int row_offset = laneid%32, col_offset = 8*(laneid/32);
-    int REPEAT = 2;
+    int row_offset = laneid%32, col_offset = 4*base_types::packing<U2>::num()*(laneid/32);
+    constexpr int REPEAT = 2;
     #else
     int row_offset = laneid%16, col_offset = 2*base_types::packing<U2>::num()*(laneid/16);
-    int REPEAT = 1;
+    constexpr int REPEAT = 1;
     #endif
     
 
@@ -65,7 +66,7 @@ __device__ inline static void load(RT &dst, const GL &src, const COORD &idx) {
 
             #pragma unroll
             for(int j = 0; j < dst.width; j++) {
-                int col = dst.tile_size_col*j + col_offset + z*16;
+                int col = dst.tile_size_col*j + col_offset + rt_base<T, ducks::rt_layout::row>::cols/REPEAT*z;
 
                 U2* tmp;
                 if constexpr (sizeof(U2) == 4) { // bf16_2 or fp8e4m3_4
@@ -138,7 +139,7 @@ __device__ inline static void load(RT &dst, const GL &src, const COORD &idx) {
     using U = typename GL::dtype;
 
     static_assert(!std::is_same_v<T, fp8e4m3>, "Unsupported type for load/store");
-    
+
     U *src_ptr = (U*)&src[(idx.template unit_coord<axis, 3>())];
     const int row_stride = src.template stride<axis>();
     int laneid = kittens::laneid();
@@ -233,6 +234,7 @@ __device__ inline static void load(RT &dst, const GL &src, const COORD &idx) {
 template<int axis, ducks::rt::row_layout RT, ducks::gl::all GL, ducks::coord::tile COORD=coord<RT>>
 __device__ inline static void store(const GL &dst, const RT &src, const COORD &idx) {
     using T2 = RT::dtype;
+    using T = base_types::packing<T2>::unpacked_type;
     using U = typename GL::dtype;
     using U2 = base_types::packing<U>::packed_type;
 
@@ -241,11 +243,11 @@ __device__ inline static void store(const GL &dst, const RT &src, const COORD &i
     int laneid = kittens::laneid();
 
     #ifdef KITTENS_CDNA4
-    int row_offset = laneid%32, col_offset = 8*(laneid/32);
-    int REPEAT = 2;
+    int row_offset = laneid%32, col_offset = 4*base_types::packing<U2>::num()*(laneid/32);
+    constexpr int REPEAT = 2;
     #else
     int row_offset = laneid%16, col_offset = 2*base_types::packing<U2>::num()*(laneid/16);
-    int REPEAT = 1;
+    constexpr int REPEAT = 1;
     #endif
 
     for (int z = 0; z < REPEAT; z++) {
@@ -256,7 +258,7 @@ __device__ inline static void store(const GL &dst, const RT &src, const COORD &i
             
             #pragma unroll
             for(int j = 0; j < src.width; j++) {
-                int col = src.tile_size_col*j + col_offset + z*16;
+                int col = src.tile_size_col*j + col_offset + rt_base<T, ducks::rt_layout::row>::cols/REPEAT*z;
                 #ifdef KITTENS_CDNA4
 
                 U2 tmp[4] = {
@@ -265,7 +267,7 @@ __device__ inline static void store(const GL &dst, const RT &src, const COORD &i
                     base_types::convertor<U2, T2>::convert(src.tiles[i][j].data[2 + z*4]),
                     base_types::convertor<U2, T2>::convert(src.tiles[i][j].data[3 + z*4])
                 };
-                if constexpr (sizeof(U2) == 4) { // bf16_2
+                if constexpr (sizeof(U2) == 4) { // bf16_2 or fp8e4m3_4
                     *(bytes_16*)&dst_ptr[row*row_stride + col] = *(bytes_16*)tmp;
                 }
                 else { // float2
