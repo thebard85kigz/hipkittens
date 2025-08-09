@@ -118,6 +118,7 @@ brew install qt@6
 mkdir build
 cd build
 cmake .. -DCMAKE_PREFIX_PATH=$(brew --prefix qt@6)
+make -j
 ```
 
 Take the output folder produced in ```transpose_matmul``` above, which corresponds to your desired kernel and download it to your local laptop filesystem. Then import it into the viewer. 
