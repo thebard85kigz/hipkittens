@@ -1,6 +1,7 @@
 
 #include "kittens.cuh"
 #include "utils.cpp"
+#include <chrono>
 #include <random>
 #include <omp.h>
 #include <cstring>
@@ -259,9 +260,41 @@ int main() {
     micro_globals globals{input_gl_a, input_gl_b, output_gl};
 
     // Warmup
-    micro_tk<<<globals.grid(), globals.block(), globals.dynamic_shared_memory()>>>(globals);
-    hipMemcpy(h_output, d_output, M * N * sizeof(dout), hipMemcpyDeviceToHost);
+    std::cout << "Warming up...\n";
+    for (int i = 0; i < 5; i++) {
+        micro_tk<<<globals.grid(), globals.block(), globals.dynamic_shared_memory()>>>(globals);
+    }
     hipDeviceSynchronize();
+
+    // Benchmark kernel performance
+    const int num_iterations = 1000;
+    std::cout << "Benchmarking " << num_iterations << " iterations...\n";
+
+    auto start = std::chrono::high_resolution_clock::now();
+    for (int i = 0; i < num_iterations; i++) {
+        micro_tk<<<globals.grid(), globals.block(), globals.dynamic_shared_memory()>>>(globals);
+    }
+    hipDeviceSynchronize();
+    auto end = std::chrono::high_resolution_clock::now();
+
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    double total_time_ms = duration.count() / 1000.0;
+    double avg_time_ms = total_time_ms / num_iterations;
+
+    // Calculate TFLOPS
+    // For FP6 GEMM: C = A * B^T, where A is M x K and B is N x K
+    // Operations: 2 * M * N * K multiply-adds = 2 * M * N * K operations
+    long long ops_per_kernel = 2LL * M * N * K;
+    double tflops = (ops_per_kernel * num_iterations) / (total_time_ms * 1e-3) / 1e12;
+
+    std::cout << "\n=== PERFORMANCE RESULTS ===\n";
+    std::cout << "Matrix size: " << M << "x" << N << "\n";
+    std::cout << "Total iterations: " << num_iterations << "\n";
+    std::cout << "Total time: " << total_time_ms << " ms\n";
+    std::cout << "Average time per kernel: " << avg_time_ms << " ms\n";
+    std::cout << "Operations per kernel: " << ops_per_kernel << "\n";
+    std::cout << "TFLOPS: " << std::fixed << std::setprecision(3) << tflops << "\n";
+    std::cout << "============================\n\n";
 
     // Check for kernel errors
     hipError_t err = hipGetLastError();
@@ -269,6 +302,9 @@ int main() {
         std::cerr << "Kernel launch failed: " << hipGetErrorString(err) << std::endl;
         return 1;
     }
+
+    // Copy result back
+    hipMemcpy(h_output, d_output, M * N * sizeof(dout), hipMemcpyDeviceToHost);
 
     // CPU reference: compute A * B^T
     std::cout << "Computing CPU reference...\n";
