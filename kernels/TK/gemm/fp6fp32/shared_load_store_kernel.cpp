@@ -33,29 +33,66 @@ void micro_tk(const micro_globals g) {
     st_f6<SIZE, SIZE> (&tile_fp6) = al.allocate<st_f6<SIZE, SIZE>>();
     rt_f6<SIZE, SIZE> tile_fp6_rt;
 
-    using T = typename st_f6<SIZE, SIZE>::dtype;  // fp6_e2m3
-    using U = typename _gl_tile_in::dtype;        // fp6_e2m3  
-    using U2 = base_types::packing<U>::packed_type; // fp6_e2m3_4
-    
-    constexpr int bytes_per_thread = 16;
-    constexpr int bytes_per_memcpy = bytes_per_thread * NUM_THREADS;
-    constexpr int memcpy_per_tile = (SIZE * SIZE * sizeof(U) + bytes_per_memcpy - 1) / bytes_per_memcpy;
+    constexpr int bytes_per_thread = 24;
+    constexpr int memcpy_per_tile =  SIZE * SIZE / (bytes_per_thread * NUM_THREADS);
     
     uint32_t swizzled_offsets[memcpy_per_tile];
     
     // Use axis=2 (like your working global-to-register code)
-    prefill_swizzled_offsets<2, false, rt_f6<SIZE, SIZE>, st_f6<SIZE, SIZE>, _gl_tile_in, coord<st_f6<SIZE, SIZE>>, NUM_THREADS>(
+    prefill_swizzled_offsets_fp6<2, false, rt_f6<SIZE, SIZE>, st_f6<SIZE, SIZE>, _gl_tile_in, coord<st_f6<SIZE, SIZE>>, NUM_THREADS>(
         g.input, {0, 0, 0, 0}, tile_fp6, swizzled_offsets);
         
-    load_global_to_shared_direct_with_swizzled_offsets<2, false, st_f6<SIZE, SIZE>, _gl_tile_in, coord<st_f6<SIZE, SIZE>>, NUM_THREADS>(
+    load_global_to_shared_direct_with_swizzled_offsets_fp6<2, false, st_f6<SIZE, SIZE>, _gl_tile_in, coord<st_f6<SIZE, SIZE>>, NUM_THREADS>(
         g.input, {0, 0, 0, 0}, tile_fp6, swizzled_offsets);
         
     __builtin_amdgcn_s_waitcnt(0);
     __builtin_amdgcn_s_barrier();
 
-    load_lds_reg_row(tile_fp6_rt, tile_fp6);
+    load_lds_reg_row_fp6(tile_fp6_rt, tile_fp6);
+    __builtin_amdgcn_s_waitcnt(0);
+    __builtin_amdgcn_s_barrier();
 
-    store(g.output, tile_fp6_rt, {0, 0, 0, 0});
+    store_fp6(g.output, tile_fp6_rt, {0, 0, 0, 0});
+}
+
+
+void pack(uint32_t *output, const din *input, int size) {
+
+    for (int i = 0; i < size * 6 / 32; i++) {
+        output[i] = 0;
+    }
+
+    for (int i = 0; i < size; i++) {
+        const uint8_t tmp = *reinterpret_cast<const uint8_t*>(&input[i]);
+        const uint32_t v = static_cast<uint32_t>(tmp & 0x3Fu);
+        const int bit_pos = i * 6;
+        const int word_idx = bit_pos >> 5;
+        const int bit_off = bit_pos & 31;
+
+        output[word_idx] |= (v << bit_off);
+        const int spill = bit_off + 6 - 32;
+        if (spill > 0) {
+            output[word_idx + 1] |= (v >> (6 - spill));
+        }
+    }
+}
+
+void unpack(dout *output, const uint32_t *input, int size) {
+    // 1. Unpack from 32-bit words
+    for (int i = 0; i < size; i++) {
+        uint8_t tmp = 0;
+        const int bit_pos = i * 6;
+        const int word_idx = bit_pos >> 5;
+        const int bit_off = bit_pos & 31;
+        const int spill = bit_off + 6 - 32;
+
+        tmp |= ((input[word_idx] >> bit_off) & 0x3Fu);
+        if (spill > 0) {
+            tmp |= ((input[word_idx + 1] << (6 - spill)) & 0x3Fu);
+        }
+
+        output[i] = std::bit_cast<dout>(tmp);
+    }
 }
 
 int main() {
@@ -63,6 +100,8 @@ int main() {
     
     // Create FP6 data, not float data
     din *h_input = new din[SIZE * SIZE];  // ← FP6, not float
+    uint32_t *h_input_packed = new uint32_t[SIZE * SIZE * 6 / 32];
+    uint32_t *h_output_packed = new uint32_t[SIZE * SIZE * 6 / 32];
     dout *h_output = new dout[SIZE * SIZE];
 
     std::random_device rd;
@@ -70,26 +109,32 @@ int main() {
     std::uniform_real_distribution<> dis(0.0f, 3.3f);
 
     // Initialize with FP6 values (convert from float)
-    h_input[0] = din(1.0f);     // Convert float → FP6
-    h_input[1] = din(2.45f);
-    h_input[2] = din(-3.7f);
-    h_input[3] = din(10.0f);
-    h_input[4] = din(-10.0f);
-    for (int i = 5; i < SIZE * SIZE; i++) {
-        h_input[i] = din(dis(gen));
+    // h_input[0] = din(1.0f);     // Convert float → FP6
+    // h_input[1] = din(2.45f);
+    // h_input[2] = din(-3.7f);
+    // h_input[3] = din(10.0f);
+    // h_input[4] = din(-10.0f);
+    for (int i = 0; i < SIZE * SIZE; i++) {
+        // h_input[i] = din(dis(gen));
+        h_input[i] = din(1.125f);
+    }
+    pack(h_input_packed, h_input, SIZE * SIZE);
+
+    for (int i = 0; i < SIZE * SIZE * 6 / 32; i++) {
+        printf("0x%x\n", h_input_packed[i]);
     }
 
     // Allocate device memory for FP6 input
-    din *d_input;
-    dout *d_output;
-    hipMalloc(&d_input, SIZE * SIZE * sizeof(din));
-    hipMalloc(&d_output, SIZE * SIZE * sizeof(dout));
+    din *d_input_packed;
+    dout *d_output_packed;
+    hipMalloc(&d_input_packed, SIZE * SIZE * 6 / 8);
+    hipMalloc(&d_output_packed, SIZE * SIZE * 6 / 8);
 
-    hipMemcpy(d_input, h_input, SIZE * SIZE * sizeof(din), hipMemcpyHostToDevice);
+    hipMemcpy(d_input_packed, h_input_packed, SIZE * SIZE * 6 / 8, hipMemcpyHostToDevice);
 
     // Setup kernel globals with proper FP6 type
-    _gl_tile_in input_gl(d_input, 1, 1, SIZE, SIZE);
-    _gl_tile_out output_gl(d_output, 1, 1, SIZE, SIZE);
+    _gl_tile_in input_gl(d_input_packed, 1, 1, SIZE, SIZE);
+    _gl_tile_out output_gl(d_output_packed, 1, 1, SIZE, SIZE);
     micro_globals globals{input_gl, output_gl};
 
 
@@ -98,7 +143,8 @@ int main() {
     hipDeviceSynchronize();
 
     // Copy back result
-    hipMemcpy(h_output, d_output, SIZE * SIZE * sizeof(dout), hipMemcpyDeviceToHost);
+    hipMemcpy(h_output_packed, d_output_packed, SIZE * SIZE * 6 / 8, hipMemcpyDeviceToHost);
+    unpack(h_output, h_output_packed, SIZE * SIZE);
 
     // Print results - just convert directly, no extra array
     std::cout << "Comparison:\n";
@@ -128,13 +174,32 @@ int main() {
         }
     }
 
+    // print entire input array
+    std::cout << "Input array:" << std::endl;
+    for (int i = 0; i < SIZE * SIZE; i++) {
+        std::cout << float(h_input[i]) << " ";
+        if ((i + 1) % SIZE == 0) {
+            std::cout << std::endl;
+        }
+    }
+    // print entire output array
+    std::cout << "Output array:" << std::endl;
+    for (int i = 0; i < SIZE * SIZE; i++) {
+        std::cout << float(h_output[i]) << " ";
+        if ((i + 1) % SIZE == 0) {
+            std::cout << std::endl;
+        }
+    }
+
     std::cout << "Number of correct: " << large_diffs << " / " << SIZE * SIZE << std::endl;
 
     // Clean up (remove the h_input_float delete)
-    hipFree(d_input);
-    hipFree(d_output);
+    hipFree(d_input_packed);
+    hipFree(d_output_packed);
     delete[] h_input;
     delete[] h_output;
+    delete[] h_input_packed;
+    delete[] h_output_packed;
 }
 
 
