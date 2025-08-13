@@ -44,7 +44,7 @@ void dump_to_csv(const char* filename, const T& data, int rows, int cols) {
 }
 
 template <int M, int N, int K>
-__global__ void matmul(const kittens::gl<fp8e4m3, 1, 1, M, K> A, const kittens::gl<fp8e4m3, 1, 1, N, K> B, const kittens::gl<float, 1, 1, M, N> C) {
+__global__ void matmul_device_ref(const kittens::gl<fp8e4m3, 1, 1, M, K> A, const kittens::gl<fp8e4m3, 1, 1, N, K> B, const kittens::gl<float, 1, 1, M, N> C) {
     static_assert(M % 64 == 0, "M must be a multiple of 64");
     static_assert(N % 64 == 0, "N must be a multiple of 64");
     static_assert(K % 64 == 0, "K must be a multiple of 64");
@@ -79,16 +79,26 @@ __global__ void matmul(const kittens::gl<fp8e4m3, 1, 1, M, K> A, const kittens::
     }
 }
 
-int main() {
-    // Allow different M and N dimensions
-    constexpr int M = 8192;  // Can be any multiple of 64
-    constexpr int N = 8192;  // Can be any multiple of 64
-    constexpr int K = 8192;
+template <int M, int N, int K, int CUs>
+void matmul_ref(const std::vector<fp8e4m3>& a, const std::vector<fp8e4m3>& b, std::vector<float>& c) {
     constexpr int threads_per_warp = 64;
     constexpr int warps_per_cu = 4;
     constexpr int threads_per_block = threads_per_warp * warps_per_cu;
-    constexpr int CUs = 256;
 
+    // Ensure input vectors have correct size
+    if (a.size() != M * K) {
+        fprintf(stderr, "Error: Input vector 'a' size %zu does not match expected M*K=%d\n", a.size(), M*K);
+        return;
+    }
+    if (b.size() != N * K) {
+        fprintf(stderr, "Error: Input vector 'b' size %zu does not match expected N*K=%d\n", b.size(), N*K);
+        return;
+    }
+
+    // Resize output vector
+    c.resize(M * N);
+
+    // Allocate device memory
     fp8e4m3 *d_a, *d_b;
     float *d_c;
     hipMalloc(&d_a, M*K*sizeof(fp8e4m3));
@@ -96,59 +106,231 @@ int main() {
     hipMalloc(&d_c, M*N*sizeof(float));
     HipCheckError();
 
-    std::vector<fp8e4m3> a_host(M*K);
-    std::vector<fp8e4m3> b_host(N*K);
-    // Randomly initialize b_host with values in [-1.0, 1.0]
-    std::mt19937 gen(42); // Fixed seed for reproducibility
-    std::uniform_real_distribution<float> dis(-1.0f, 1.0f);
-    std::vector<float> c_ref(M*N, 0.0f);
-    
-    // Initialize b_host (N x K matrix)
-    for (int i = 0; i < N*K; i++) {
-        b_host[i] = fp8e4m3(dis(gen));
-    }
-
-    // Initialize a_host to identity matrix
-    // a_host is M x K, but we want to set a_host[i*K + k] = 1.0 if i == k, else 0.0
-    // However, since K may be larger than M, we only set the diagonal up to min(M, K)
-    for (int i = 0; i < M; ++i) {
-        for (int k = 0; k < K; ++k) {
-            if (i == k) {
-                a_host[i*K + k] = fp8e4m3(1.0f);
-            } else {
-                a_host[i*K + k] = fp8e4m3(0.0f);
-            }
-        }
-    }
-    
-    // Compute reference result: C = A * B^T
-    // A is M x K (identity in first min(M,K) diagonal), B is N x K
-    // C should be M x N
-    #pragma omp parallel for collapse(2)
-    for (int i = 0; i < M; ++i) {
-        for (int j = 0; j < N; ++j) {
-            float sum = 0.0f;
-            for (int k = 0; k < K; ++k) {
-                float a_val = float(a_host[i*K + k]);
-                float b_val = float(b_host[j*K + k]);
-                sum += a_val * b_val;
-            }
-            c_ref[i*N + j] = sum;
-        }
-    }
-
-    hipMemcpy(d_a, a_host.data(), M*K*sizeof(fp8e4m3), hipMemcpyHostToDevice);
-    hipMemcpy(d_b, b_host.data(), N*K*sizeof(fp8e4m3), hipMemcpyHostToDevice);
+    // Copy data to device
+    hipMemcpy(d_a, a.data(), M*K*sizeof(fp8e4m3), hipMemcpyHostToDevice);
+    hipMemcpy(d_b, b.data(), N*K*sizeof(fp8e4m3), hipMemcpyHostToDevice);
+    hipMemset(d_c, 0, M*N*sizeof(float));
     HipCheckError();
 
+    // Create global memory objects and launch kernel
     kittens::gl<fp8e4m3, 1, 1, M, K> A(d_a, nullptr, nullptr, nullptr, nullptr);
     kittens::gl<fp8e4m3, 1, 1, N, K> B(d_b, nullptr, nullptr, nullptr, nullptr);
     kittens::gl<float, 1, 1, M, N> C(d_c, nullptr, nullptr, nullptr, nullptr);
-    matmul<M, N, K><<<CUs, threads_per_block>>>(A, B, C);
+    matmul_device_ref<M, N, K><<<CUs, threads_per_block>>>(A, B, C);
     HipCheckError();
 
+    // Copy result back to host
+    hipMemcpy(c.data(), d_c, M*N*sizeof(float), hipMemcpyDeviceToHost);
+    HipCheckError();
+
+    // Free device memory
+    hipFree(d_a);
+    hipFree(d_b);
+    hipFree(d_c);
+    HipCheckError();
+}
+
+template <int M, int N, int K>
+__global__ void matmul_device(const kittens::gl<fp8e4m3, 1, 1, M, K> A, const kittens::gl<fp8e4m3, 1, 1, N, K> B, const kittens::gl<float, 1, 1, M, N> C) {
+    // Each threadblock computes 128x128 output tile
+    constexpr int BLOCK_SIZE = 128;
+    constexpr int BLOCK_K = 64;
+    constexpr int blocks_per_row = M / BLOCK_SIZE; // Number of blocks per matrix row
+    constexpr int blocks_per_col = N / BLOCK_SIZE; // Number of blocks per matrix col
+    constexpr int total_blocks_needed = blocks_per_row * blocks_per_col; // Total blocks needed
+    constexpr int k_iters = K / BLOCK_K; // K iterations
+
+    // Shared memory tiles: 128x64 for A and B
+    __shared__ st<fp8e4m3, 128, 64> As;
+    __shared__ st<fp8e4m3, 128, 64> Bs;
+
+    // Register tiles: 64x64 per warp
+    rt_fp8e4m3<64, 64> a;
+    rt_fp8e4m3<64, 64> b;
+    rt_fl<64, 64, kittens::ducks::rt_layout::accumulator> c;
+
+    // Calculate how many outer iterations needed based on available threadblocks
+    int outer_iters = (total_blocks_needed + gridDim.x - 1) / gridDim.x;
+
+    // Outer loop: iterate until all matrix blocks are covered
+    for (int outer = 0; outer < outer_iters; outer++) {
+        // Calculate which block this threadblock should work on
+        int global_block_id = outer * gridDim.x + blockIdx.x;
+
+        // Early exit if this threadblock has no work in this iteration
+        if (global_block_id >= total_blocks_needed) continue;
+
+        // Convert linear block ID to 2D coordinates
+        int block_row = global_block_id / blocks_per_col;
+        int block_col = global_block_id % blocks_per_col;
+        int block_m = block_row * BLOCK_SIZE;
+        int block_n = block_col * BLOCK_SIZE;
+
+        // Warp arrangement within threadblock: 2x2 warps covering 128x128
+        int warp_m = (warpid() / 2) * 64; // warp row: 0 or 64
+        int warp_n = (warpid() % 2) * 64; // warp col: 0 or 64
+
+        zero(c);
+
+        // Inner loop over K dimension
+        for (int k = 0; k < k_iters; k++) {
+            __builtin_amdgcn_s_waitcnt(0);
+            __builtin_amdgcn_s_barrier();
+            __builtin_amdgcn_sched_barrier(0);
+            // Cooperatively load 128x64 tiles into shared memory
+            // All 4 warps participate in loading
+            load<2, false, kittens::ducks::rt_layout::row>(As, A, {0, 0, block_m / 128, k});
+            load<2, false, kittens::ducks::rt_layout::row>(Bs, B, {0, 0, block_n / 128, k});
+
+            __builtin_amdgcn_s_waitcnt(0);
+            __builtin_amdgcn_s_barrier();
+            __builtin_amdgcn_sched_barrier(0);
+
+            // Each warp loads its 64x64 portion from shared memory using subtiles
+            auto as_subtile = kittens::subtile_inplace<64, 64>(As, {warp_m / 64, 0});
+            auto bs_subtile = kittens::subtile_inplace<64, 64>(Bs, {warp_n / 64, 0});
+            __builtin_amdgcn_s_waitcnt(0);
+            __builtin_amdgcn_s_barrier();
+            __builtin_amdgcn_sched_barrier(0);
+            load(a, as_subtile);
+            load(b, bs_subtile);
+
+            __builtin_amdgcn_s_waitcnt(0);
+            __builtin_amdgcn_s_barrier();
+            __builtin_amdgcn_sched_barrier(0);
+
+            // Compute: C += A * B^T
+            mma_ABt(c, a, b, c);
+            __builtin_amdgcn_s_waitcnt(0);
+            __builtin_amdgcn_s_barrier();
+            __builtin_amdgcn_sched_barrier(0);
+        }
+
+        __builtin_amdgcn_s_waitcnt(0);
+            __builtin_amdgcn_s_barrier();
+            __builtin_amdgcn_sched_barrier(0);
+
+        // Store result: each warp stores its 64x64 result
+        store(C, c, {0, 0, (block_m + warp_m) / 64, (block_n + warp_n) / 64});
+        __builtin_amdgcn_s_waitcnt(0);
+            __builtin_amdgcn_s_barrier();
+            __builtin_amdgcn_sched_barrier(0);
+    }
+}
+
+template <int M, int N, int K, int CUs>
+void matmul_host(const std::vector<fp8e4m3>& a, const std::vector<fp8e4m3>& b, std::vector<float>& c) {
+    constexpr int threads_per_warp = 64;
+    constexpr int warps_per_cu = 4;
+    constexpr int threads_per_block = threads_per_warp * warps_per_cu;
+    
+    // Ensure input vectors have correct size
+    if (a.size() != M * K) {
+        fprintf(stderr, "Error: Input vector 'a' size %zu does not match expected M*K=%d\n", a.size(), M*K);
+        return;
+    }
+    if (b.size() != N * K) {
+        fprintf(stderr, "Error: Input vector 'b' size %zu does not match expected N*K=%d\n", b.size(), N*K);
+        return;
+    }
+    
+    // Resize output vector
+    c.resize(M * N);
+    
+    // Allocate device memory
+    fp8e4m3 *d_a, *d_b;
+    float *d_c;
+    hipMalloc(&d_a, M*K*sizeof(fp8e4m3));
+    hipMalloc(&d_b, N*K*sizeof(fp8e4m3));
+    hipMalloc(&d_c, M*N*sizeof(float));
+    HipCheckError();
+    
+    // Copy data to device
+    hipMemcpy(d_a, a.data(), M*K*sizeof(fp8e4m3), hipMemcpyHostToDevice);
+    hipMemcpy(d_b, b.data(), N*K*sizeof(fp8e4m3), hipMemcpyHostToDevice);
+    hipMemset(d_c, 0, M*N*sizeof(float));
+    HipCheckError();
+    
+    // Create global memory objects and launch kernel
+    kittens::gl<fp8e4m3, 1, 1, M, K> A(d_a, nullptr, nullptr, nullptr, nullptr);
+    kittens::gl<fp8e4m3, 1, 1, N, K> B(d_b, nullptr, nullptr, nullptr, nullptr);
+    kittens::gl<float, 1, 1, M, N> C(d_c, nullptr, nullptr, nullptr, nullptr);
+    matmul_device<M, N, K><<<CUs, threads_per_block>>>(A, B, C);
+    HipCheckError();
+    
+    // Copy result back to host
+    hipMemcpy(c.data(), d_c, M*N*sizeof(float), hipMemcpyDeviceToHost);
+    HipCheckError();
+    
+    // Free device memory
+    hipFree(d_a);
+    hipFree(d_b);
+    hipFree(d_c);
+    HipCheckError();
+}
+
+// Random initialization function
+template <int M, int N, int K>
+void random_init(std::vector<fp8e4m3>& a_host, std::vector<fp8e4m3>& b_host) {
+    std::mt19937 gen(42); // Fixed seed for reproducibility
+    std::uniform_real_distribution<float> dis(-1.0f, 1.0f);
+    for (int i = 0; i < M*K; i++) {
+        a_host[i] = fp8e4m3(dis(gen));
+    }
+    for (int i = 0; i < N*K; i++) {
+        b_host[i] = fp8e4m3(dis(gen));
+    }
+}
+
+// Identity matrix initialization for easier debugging
+// For A*B^T with identity matrices, result should be identity matrix
+template <int M, int N, int K>
+void identity_init(std::vector<fp8e4m3>& a_host, std::vector<fp8e4m3>& b_host) {
+    // Initialize A to identity matrix (M x K)
+    for (int i = 0; i < M; i++) {
+        for (int j = 0; j < K; j++) {
+            if (i == j) {
+                a_host[i * K + j] = fp8e4m3(1.0f);
+            } else {
+                a_host[i * K + j] = fp8e4m3(0.0f);
+            }
+        }
+    }
+    
+    // Initialize B to identity matrix (N x K)
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < K; j++) {
+            if (i == j) {
+                b_host[i * K + j] = fp8e4m3(1.0f);
+            } else {
+                b_host[i * K + j] = fp8e4m3(0.0f);
+            }
+        }
+    }
+}
+
+int main() {
+    // Re-test 256x256 to verify if it actually passed
+    constexpr int M = 8192;  // 64x64 = 4096 threadblocks needed
+    constexpr int N = 8192;  // 64x64 = 4096 threadblocks needed
+    constexpr int K = 8192;  // Test with larger K dimension
+    constexpr int CUs = 256; // 256 threadblocks (16 outer iterations)
+
+    // Initialize input matrices
+    std::vector<fp8e4m3> a_host(M*K);
+    std::vector<fp8e4m3> b_host(N*K);
+    std::vector<float> c_ref(M*N);
     std::vector<float> c_host(M*N);
-    hipMemcpy(c_host.data(), d_c, M*N*sizeof(float), hipMemcpyDeviceToHost);
+
+    // Test with random matrices now that the kernel works
+    random_init<M, N, K>(a_host, b_host);
+    // identity_init<M, N, K>(a_host, b_host);
+
+    // Compute reference result using GPU reference: C = A * B^T
+    matmul_ref<M, N, K, CUs>(a_host, b_host, c_ref);
+
+    // Compute test result using same GPU implementation: C = A * B^T
+    matmul_host<M, N, K, CUs>(a_host, b_host, c_host);
 
     bool success = true;
     // Compare GPU result (c_host) with CPU reference (c_ref)
@@ -169,7 +351,6 @@ int main() {
             break;
         }
     }
-    // }
     if (success) {
         printf("Test passed\n");
         #ifdef DUMP_TO_CSV
@@ -185,8 +366,5 @@ int main() {
         dump_to_csv("c_host.csv", c_host, M, N);
         dump_to_csv("c_ref.csv", c_ref, M, N);
     }
-    hipFree(d_a);
-    hipFree(d_b);
-    hipFree(d_c);
     return 0;
 }

@@ -195,9 +195,21 @@ struct st_subtile {
     int row_offset, col_offset;
 
     __device__ st_subtile(ST &src, int2 rowcol) {
-        data = &src.data[0];
+        #ifdef KITTENS_CDNA4
+        if constexpr (std::is_same_v<T, fp8e4m3>) {
+            row_offset = rowcol.x * height * underlying_width;
+            col_offset = rowcol.y * width;
+            data = &src.data[(row_offset + col_offset) * kittens::TILE_COL_DIM<T> * kittens::TILE_ROW_DIM<T> * sizeof(T)];
+        } else {
+            row_offset = rowcol.x * rows;
+            col_offset = rowcol.y * cols;
+            data = &src.data[0];
+        }
+        #else
         row_offset = rowcol.x * rows;
         col_offset = rowcol.y * cols;
+        data = &src.data[0];
+        #endif
     }
 
     __device__ inline T* idx(T *ptr, const int2 coord) { // naive row-major coord default
