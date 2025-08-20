@@ -339,7 +339,7 @@ __global__ __launch_bounds__(512, 2) void matmul_device(const kittens::gl<fp8e4m
     // Swizzle chiplet so that wgids are in the same XCD.
     wgid = (wgid % NUM_XCDS) * (NUM_WGS / NUM_XCDS) + (wgid / NUM_XCDS);
     // Swizzle for better L2 within the same XCD.
-    const int WGM = 8;
+    const int WGM = 4;
     const int num_pid_m = (M + BLOCK_SIZE_ROW - 1) / BLOCK_SIZE_ROW;
     const int num_pid_n = (N + BLOCK_SIZE_COL - 1) / BLOCK_SIZE_COL;
     int num_wgid_in_group = WGM * num_pid_n;
