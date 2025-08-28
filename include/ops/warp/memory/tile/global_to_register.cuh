@@ -95,8 +95,6 @@ __device__ inline static void load(RT &dst, const GL &src, const COORD &idx) {
     std::uint64_t  as_u64 = static_cast<std::uint64_t>(as_int);    // widen if host is 32-bit
     buffer_resource br = make_buffer_resource(as_u64, buffer_size, 0x00020000);
 
-    int condition = (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0);
-
     #pragma unroll
     for(int i = 0; i < dst.height; i++) {
         int row = dst.tile_size_row*i + row_offset;
@@ -301,7 +299,6 @@ __device__ inline static void load(RT &dst, const GL &src, const COORD &idx) {
 
     int col_offset = laneid%(dst.tile_size_col), row_offset = laneid/(dst.tile_size_col);
 
-    int condition = (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0);
     #pragma unroll
     for(int i = 0; i < dst.height; i++) {
         #pragma unroll
