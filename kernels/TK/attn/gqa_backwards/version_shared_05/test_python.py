@@ -19,27 +19,6 @@ torch.set_printoptions(
 )
 
 # **************************************************
-# Benchmarking
-# **************************************************
-
-num_warmup = 20
-num_iters = 20
-start_event = torch.cuda.Event(enable_timing=True) # in milliseconds
-end_event = torch.cuda.Event(enable_timing=True)
-
-def flops(batch, seqlen, nheads, headdim, causal, mode="bwd"):
-    assert mode in ["fwd", "bwd", "fwd_bwd"]
-    f = 4 * batch * seqlen**2 * nheads * headdim // (2 if causal else 1)
-    return f if mode == "fwd" else (2.5 * f if mode == "bwd" else 3.5 * f)
-
-def efficiency(flop, time):
-    """Calculate efficiency in TFLOPS."""
-    flop = flop / 1e12  # convert to TFLOPS
-    time = time / 1e3   # convert to seconds
-    return flop / time
-
-
-# **************************************************
 # Reference
 # **************************************************
 
@@ -79,7 +58,7 @@ def simple_flash_backward(Q, K, V, dO, m, l):
     dQ = torch.matmul(dS, K) * scale
     dK = torch.matmul(dS.transpose(-2, -1), Q) * scale
 
-    return dQ, dK, dV, Delta
+    return P, dQ, dK, dV, Delta
 
 # **************************************************
 # Generate inputs
@@ -94,8 +73,6 @@ d = 128
 dtype = torch.bfloat16
 mean = 10
 std = 0.1  
-
-flops_ref = flops(b, n, h, d, causal, mode="bwd")
 
 def generate_tensor(shape, mean, std, dtype, device):
     tensor = torch.randn(shape, dtype=dtype, device=device)
@@ -119,86 +96,6 @@ def generate_inputs():
 Q_bhnd, K_bhnd, V_bhnd, dO_bhnd = generate_inputs()
 
 # **************************************************
-# AITER forward and backward
-# **************************************************
-
-if use_aiter:
-    timings = []
-    print("\nRunning AITER...")
-
-    for _ in range(num_warmup):
-        Q_aiter = Q_bhnd.transpose(1, 2).contiguous().detach().requires_grad_(True)  
-        K_aiter = K_bhnd.transpose(1, 2).contiguous().detach().requires_grad_(True)  
-        V_aiter = V_bhnd.transpose(1, 2).contiguous().detach().requires_grad_(True)  
-        dO_aiter = dO_bhnd.transpose(1, 2).contiguous()
-        out_aiter, softmax_lse = aiter.flash_attn_func(Q_aiter, K_aiter, V_aiter, causal, return_lse=True, deterministic=True)
-        out_aiter.backward(dO_aiter)
-    
-    for _ in range(num_iters):
-        Q_aiter = Q_bhnd.transpose(1, 2).contiguous().detach().requires_grad_(True)  
-        K_aiter = K_bhnd.transpose(1, 2).contiguous().detach().requires_grad_(True)  
-        V_aiter = V_bhnd.transpose(1, 2).contiguous().detach().requires_grad_(True)  
-        dO_aiter = dO_bhnd.transpose(1, 2).contiguous()
-        out_aiter, softmax_lse = aiter.flash_attn_func(Q_aiter, K_aiter, V_aiter, causal, return_lse=True, deterministic=True)
-        torch.cuda.synchronize()
-        start_event.record()
-        out_aiter.backward(dO_aiter)
-        end_event.record()
-        torch.cuda.synchronize()
-        elapsed_time = start_event.elapsed_time(end_event)
-        timings.append(elapsed_time)
-
-    avg_time_aiter = sum(timings) / len(timings)
-    eff_aiter = efficiency(flops_ref, avg_time_aiter)
-    print(f"AITER (AMD) reference average execution time: {avg_time_aiter:.4f} ms")
-    print(f"AITER (AMD) reference performance: {eff_aiter:.2f} TFLOPS for {b=} {h=} {n=} {d=} {causal=}.\n")
-
-    q_grad_aiter_bnhd = Q_aiter.grad
-    k_grad_aiter_bnhd = K_aiter.grad  
-    v_grad_aiter_bnhd = V_aiter.grad
-    out_aiter_bhnd = out_aiter.transpose(1, 2)  # BNHD -> BHND
-    q_grad_aiter_bhnd = q_grad_aiter_bnhd.transpose(1, 2)  # BNHD -> BHND
-    k_grad_aiter_bhnd = k_grad_aiter_bnhd.transpose(1, 2)  # BNHD -> BHND
-    v_grad_aiter_bhnd = v_grad_aiter_bnhd.transpose(1, 2)  # BNHD -> BHND
-
-# **************************************************
-# PyTorch Reference
-# **************************************************
-
-print("Running PyTorch reference...")
-timings = []
-for _ in range(num_warmup):
-    Q_pytorch = Q_bhnd.clone().detach().requires_grad_(True)
-    K_pytorch = K_bhnd.clone().detach().requires_grad_(True)
-    V_pytorch = V_bhnd.clone().detach().requires_grad_(True)
-    dO_pytorch = dO_bhnd.clone()
-    out_pytorch, q_pytorch, k_pytorch, v_pytorch = reference_forward(Q_pytorch, K_pytorch, V_pytorch, causal)
-    out_pytorch.backward(dO_pytorch)
-
-for _ in range(num_iters):
-    Q_pytorch = Q_bhnd.clone().detach().requires_grad_(True)
-    K_pytorch = K_bhnd.clone().detach().requires_grad_(True)
-    V_pytorch = V_bhnd.clone().detach().requires_grad_(True)
-    dO_pytorch = dO_bhnd.clone()
-    out_pytorch, q_pytorch, k_pytorch, v_pytorch = reference_forward(Q_pytorch, K_pytorch, V_pytorch, causal)
-    torch.cuda.synchronize()
-    start_event.record()
-    out_pytorch.backward(dO_pytorch)
-    end_event.record()
-    torch.cuda.synchronize()
-    elapsed_time = start_event.elapsed_time(end_event)
-    timings.append(elapsed_time)
-
-avg_time_pytorch = sum(timings) / len(timings)
-eff_pytorch = efficiency(flops_ref, avg_time_pytorch)
-print(f"PyTorch reference average execution time: {avg_time_pytorch:.4f} ms")
-print(f"PyTorch reference performance: {eff_pytorch:.2f} TFLOPS for {b=} {h=} {n=} {d=} {causal=}.\n")
-
-q_grad_pytorch = q_pytorch.grad
-k_grad_pytorch = k_pytorch.grad
-v_grad_pytorch = v_pytorch.grad
-
-# **************************************************
 # Tiled Reference
 # **************************************************
 
@@ -216,11 +113,12 @@ O_tiled = torch.matmul(P_tiled, V_tiled.float())
 m_tiled = m_tiled.squeeze(-1)
 l_tiled = l_tiled.squeeze(-1)
 
-dQ_tiled, dK_tiled, dV_tiled, delta_tiled = simple_flash_backward(Q_tiled.float(), K_tiled.float(), V_tiled.float(), dO_tiled.float(), m_tiled, l_tiled)
+P_tiled, dQ_tiled, dK_tiled, dV_tiled, delta_tiled = simple_flash_backward(Q_tiled.float(), K_tiled.float(), V_tiled.float(), dO_tiled.float(), m_tiled, l_tiled)
 out_tiled_bhnd = O_tiled
 q_grad_tiled_bhnd = dQ_tiled
 k_grad_tiled_bhnd = dK_tiled
 v_grad_tiled_bhnd = dV_tiled
+delta_tiled = delta_tiled.transpose(-1, -2).contiguous()
 
 
 # **************************************************
@@ -238,128 +136,73 @@ l_tk = l_tiled.float().unsqueeze(-1)
 
 # TK
 print("Running ThunderKittens ...")
-timings = []
-for _ in range(num_warmup):
-    dQ_tk = torch.zeros_like(q_grad_tiled_bhnd).float()
-    dK_tk = torch.zeros_like(k_grad_tiled_bhnd).float()
-    dV_tk = torch.zeros_like(v_grad_tiled_bhnd).float()
-    delta_tk = torch.zeros_like(delta_tiled).float().transpose(-1, -2).contiguous()
+P_tk = torch.zeros_like(P_tiled).float()
+dOg_out_tk = torch.zeros_like(dO_tk).float()
+dQ_tk = torch.zeros_like(q_grad_tiled_bhnd).float()
+dK_tk = torch.zeros_like(k_grad_tiled_bhnd).float()
+dV_tk = torch.zeros_like(v_grad_tiled_bhnd).float()
+delta_tk = torch.zeros_like(delta_tiled).float()
 
-    tk_kernel.dispatch_prep(
-        O_tk,     # Og
-        dO_tk,    # dOg
-        delta_tk, # delta
-    )
+tk_kernel.dispatch_prep(
+    O_tk,     # Og
+    dO_tk,    # dOg
+    delta_tk, # delta
+)
 
-    tk_kernel.dispatch_bwd_combined(
-        Q_tk,     
-        K_tk,     
-        V_tk,     
-        O_tk,     
-        dO_tk,    
-        dQ_tk,   
-        dK_tk,    
-        dV_tk,    
-        m_tk, 
-        l_tk,
-        delta_tk
-    )
-
-
-for _ in range(num_iters):
-    dQ_tk = torch.zeros_like(q_grad_tiled_bhnd).float()
-    dK_tk = torch.zeros_like(k_grad_tiled_bhnd).float()
-    dV_tk = torch.zeros_like(v_grad_tiled_bhnd).float()
-    # delta_tk = torch.zeros_like(delta_tiled).float()
-    delta_tk = torch.zeros_like(delta_tiled).float().transpose(-1, -2).contiguous()
-    torch.cuda.synchronize()
-    start_event.record()
-
-    tk_kernel.dispatch_prep(
-        O_tk,     # Og
-        dO_tk,    # dOg
-        delta_tk, # delta
-    )
-
-    tk_kernel.dispatch_bwd_combined(
-        Q_tk,     
-        K_tk,     
-        V_tk,     
-        O_tk,     
-        dO_tk,    
-        dQ_tk,   
-        dK_tk,    
-        dV_tk,    
-        m_tk, 
-        l_tk,
-        delta_tk
-    )
-
-    end_event.record()
-    torch.cuda.synchronize()
-    elapsed_time = start_event.elapsed_time(end_event)
-    timings.append(elapsed_time)
-    delta_tk = delta_tk.transpose(-1, -2).contiguous()
-
-avg_time_tk = sum(timings) / len(timings)
-eff_tk = efficiency(flops_ref, avg_time_tk)
-print(f"ThunderKittens average execution time: {avg_time_tk:.4f} ms")
-print(f"ThunderKittens performance: {eff_tk:.2f} TFLOPS for {b=} {h=} {n=} {d=} {causal=}.\n")
+tk_kernel.dispatch_bwd_combined(
+    P_tk,
+    dOg_out_tk,
+    Q_tk,     
+    K_tk,     
+    V_tk,     
+    O_tk,     
+    dO_tk,    
+    dQ_tk,   
+    dK_tk,    
+    dV_tk,    
+    m_tk, 
+    l_tk,
+    delta_tk
+)
 
 # **************************************************
 # Comparisons
 # **************************************************
 
-if use_aiter:
-    out_diff = (out_aiter_bhnd - out_pytorch).abs()
-    q_grad_diff = (q_grad_aiter_bhnd - q_grad_pytorch).abs()
-    k_grad_diff = (k_grad_aiter_bhnd - k_grad_pytorch).abs()
-    v_grad_diff = (v_grad_aiter_bhnd - v_grad_pytorch).abs()
+# TK vs Tiled
+print(f"\nTK vs Tiled comparison:")
 
-# Compare TK with PyTorch
-out_tiled_diff = (out_tiled_bhnd - out_pytorch).abs()
-q_grad_tiled_diff = (q_grad_tiled_bhnd - q_grad_pytorch).abs()
-k_grad_tiled_diff = (k_grad_tiled_bhnd - k_grad_pytorch).abs()
-v_grad_tiled_diff = (v_grad_tiled_bhnd - v_grad_pytorch).abs()
+num_print = 17
+print("\nP outputs:")
+print(f"TK: {P_tk[0, 0, :num_print, :num_print]}")
+print(f"P: {P_tiled[0, 0, :num_print, :num_print]}")
 
-if use_aiter:
-    print(f"\nAITER vs PyTorch comparison:")
-    print(f"Output max error: {out_diff.max().item():.6f}")
-    print(f"Q grad max error: {q_grad_diff.max().item():.6f}")
-    print(f"K grad max error: {k_grad_diff.max().item():.6f}")
-    print(f"V grad max error: {v_grad_diff.max().item():.6f}")
+print("\ndOg_out outputs:")
+print(f"TK: {dOg_out_tk[0, 0, :num_print, :num_print]}")
+print(f"dOg: {dO_bhnd[0, 0, :num_print, :num_print]}")
 
-print(f"\nTiled vs PyTorch comparison:")
-print(f"Output max error: {out_tiled_diff.max().item():.6f}")
-print(f"Q grad max error: {q_grad_tiled_diff.max().item():.6f}")
-print(f"K grad max error: {k_grad_tiled_diff.max().item():.6f}")
-print(f"V grad max error: {v_grad_tiled_diff.max().item():.6f}")
-
-# TK vs PyTorch
-print(f"\nTK vs PyTorch comparison:")
-
-num_print = 8
-print(f"Delta: {delta_tiled[0, 0, :num_print, 0]}")
-print(f"TK: {delta_tk[0, 0, :num_print, 0]}")
+print("\nDelta outputs:")
+print(f"TK: {delta_tk[0, 0, 0, :num_print]}")
+print(f"Delta: {delta_tiled[0, 0, 0, :num_print]}")
 
 print("\nGradient K outputs:")
 print("TK: ", dK_tk[0, 0, 0, :num_print], "Max:", dK_tk.max().item())
-print("PyTorch: ", k_grad_pytorch[0, 0, 0, :num_print], "Max:", k_grad_pytorch.max().item())
+print("Tiled: ", k_grad_tiled_bhnd[0, 0, 0, :num_print], "Max:", k_grad_tiled_bhnd.max().item())
 
 print()
 print("Gradient V outputs:")
 print("TK: ", dV_tk[0, 0, 0, :num_print], "Max:", dV_tk.max().item())
-print("PyTorch: ", v_grad_pytorch[0, 0, 0, :num_print], "Max:", v_grad_pytorch.max().item())
+print("Tiled: ", v_grad_tiled_bhnd[0, 0, 0, :num_print], "Max:", v_grad_tiled_bhnd.max().item())
 
 print()
 print("Gradient Q outputs:")
 print("TK: ", dQ_tk[0, 0, 0, :num_print], "Max:", dQ_tk.max().item())
-print("PyTorch: ", q_grad_pytorch[0, 0, 0, :num_print], "Max:", q_grad_pytorch.max().item())
+print("Tiled: ", q_grad_tiled_bhnd[0, 0, 0, :num_print], "Max:", q_grad_tiled_bhnd.max().item())
 
 # **************************************************
-# TK vs PyTorch (robust tolerances & metrics)
+# TK vs Tiled (robust tolerances & metrics)
 # **************************************************
-print(f"\nRobustness checks (TK vs PyTorch):")
+print(f"\nRobustness checks (TK vs Tiled):")
 
 def robustness_check(ref, pred):
     ref = ref.float()
@@ -375,11 +218,19 @@ def robustness_check(ref, pred):
     return diff, error_count, numel, rel_error, l2_error, cos, mask   
 
 # Compute diffs in float32 to avoid bf16 quantization in the comparison itself
+P_diff, P_err_cnt, P_total, P_rel_error, P_l2_error, P_cos, P_mask = robustness_check(P_tiled, P_tk)
+dOg_out_diff, dOg_out_err_cnt, dOg_out_total, dOg_out_rel_error, dOg_out_l2_error, dOg_out_cos, dOg_out_mask = robustness_check(dO_bhnd, dOg_out_tk)
 delta_diff, delta_err_cnt, delta_total, delta_rel_error, delta_l2_error, delta_cos, delta_mask = robustness_check(delta_tiled, delta_tk)
-q_diff, q_err_cnt, q_total, q_rel_error, q_l2_error, q_cos, q_mask = robustness_check(q_grad_pytorch, dQ_tk)
-k_diff, k_err_cnt, k_total, k_rel_error, k_l2_error, k_cos, k_mask = robustness_check(k_grad_pytorch, dK_tk)
-v_diff, v_err_cnt, v_total, v_rel_error, v_l2_error, v_cos, v_mask = robustness_check(v_grad_pytorch, dV_tk)
+q_diff, q_err_cnt, q_total, q_rel_error, q_l2_error, q_cos, q_mask = robustness_check(q_grad_tiled_bhnd, dQ_tk)
+k_diff, k_err_cnt, k_total, k_rel_error, k_l2_error, k_cos, k_mask = robustness_check(k_grad_tiled_bhnd, dK_tk)
+v_diff, v_err_cnt, v_total, v_rel_error, v_l2_error, v_cos, v_mask = robustness_check(v_grad_tiled_bhnd, dV_tk)
 
+print(f"P: max_abs={P_diff.max().item():.6f}, max_rel={P_rel_error:.4f}, "
+      f"rel_l2={P_l2_error:.4f}, cos={P_cos:.6f}, "
+      f"errors={P_err_cnt}/{P_total} ({100*P_err_cnt/P_total:.4f}%)")
+print(f"dOg_out: max_abs={dOg_out_diff.max().item():.6f}, max_rel={dOg_out_rel_error:.4f}, "
+      f"rel_l2={dOg_out_l2_error:.4f}, cos={dOg_out_cos:.6f}, "
+      f"errors={dOg_out_err_cnt}/{dOg_out_total} ({100*dOg_out_err_cnt/dOg_out_total:.4f}%)")
 print(f"Delta: max_abs={delta_diff.max().item():.6f}, max_rel={delta_rel_error:.4f}, "
       f"rel_l2={delta_l2_error:.4f}, cos={delta_cos:.6f}, "
       f"errors={delta_err_cnt}/{delta_total} ({100*delta_err_cnt/delta_total:.4f}%)")

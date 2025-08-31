@@ -59,6 +59,7 @@ void dispatch_prep(attn_prep_globals<D> g) {
 }
 
 template<int D> struct attn_bwd_combined_globals { 
+    gl<float, -1, -1, -1, -1> P, dOg_out;
     gl<bf16, -1, -1, -1, -1> Q, K, V, O;
     gl<float, -1, -1, -1, -1> dOg, dQg, dKg, dVg;
     gl<float, -1, -1, -1, -1> m_vec, l_vec, delta_vec;
@@ -117,8 +118,11 @@ __global__ void attend_bwd_combined_ker(const attn_bwd_combined_globals<D> g) {
         // 12. dV_j += P_ij^T @ dO_i
         attn_tile<D, bf16, accum_col_l, mfma_16x16x32> P_ij_bf16_acc_col;
         copy(P_ij_bf16_acc_col, S_ij);
-        attn_tile<D, bf16, col_l, mfma_32x32x16> P_ij_bf16_col = *(attn_tile<D, bf16, col_l, mfma_32x32x16>*)(&P_ij_bf16_acc_col);
+        attn_tile<D, bf16, col_l, mfma_32x32x16> P_ij_bf16_col;
+        swap_layout(P_ij_bf16_col, P_ij_bf16_acc_col);
         mma_AtB(dV_j, P_ij_bf16_col, dO_i, dV_j);
+        store(g.P, P_ij_bf16_col, {batch_idx, head_idx, i, seq_idx * NUM_WARPS + warpid});
+        store(g.dOg_out, dO_i, {batch_idx, head_idx, i, 0});
 
         // // 13. dP_ij = dO_i @ V_j^T
         // attn_tile<D,float,accum_col_l> dP_ij;
@@ -171,6 +175,8 @@ PYBIND11_MODULE(tk_kernel, m) {
     );
 
     py::bind_function<dispatch_bwd_combined<ATTN_D>>(m, "dispatch_bwd_combined", 
+        &attn_bwd_combined_globals<ATTN_D>::P,
+        &attn_bwd_combined_globals<ATTN_D>::dOg_out,
         &attn_bwd_combined_globals<ATTN_D>::Q, 
         &attn_bwd_combined_globals<ATTN_D>::K, 
         &attn_bwd_combined_globals<ATTN_D>::V, 
