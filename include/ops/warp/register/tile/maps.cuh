@@ -620,7 +620,42 @@ __device__ static inline void add_row(T &dst, const T &src, const V &row_values)
  */
 template<ducks::rt::all T, ducks::rv::all V>
 __device__ static inline void sub_row(T &dst, const T &src, const V &row_values) {
-    row_map<base_ops::sub, T, V>(dst, src, row_values);
+
+    #pragma unroll
+    for(int i = 0; i < dst.height; i++) {
+        #pragma unroll
+        for(int j = 0; j < dst.width; j++) {
+            // dst.tiles[i][j].data[0].x -= __builtin_amdgcn_mov_dpp(row_values[i][0], 0x00, 0xF, 0xF, true);
+            // dst.tiles[i][j].data[0].y -= __builtin_amdgcn_mov_dpp(row_values[i][0], 0x55, 0xF, 0xF, true);
+            // dst.tiles[i][j].data[1].x -= __builtin_amdgcn_mov_dpp(row_values[i][0], 0xAA, 0xF, 0xF, true);
+            // dst.tiles[i][j].data[1].y -= __builtin_amdgcn_mov_dpp(row_values[i][0], 0xFF, 0xF, 0xF, true);
+            asm volatile(
+                "v_subrev_f32_dpp %0, %1, %0 quad_perm:[0,0,0,0] row_mask:0xf bank_mask:0xf"
+                : "=v"(dst.tiles[i][j].data[0].x)
+                : "v"(row_values[i][0])
+                : "memory"
+            );
+            asm volatile(
+                "v_subrev_f32_dpp %0, %1, %0 quad_perm:[1,1,1,1] row_mask:0xf bank_mask:0xf"
+                : "=v"(dst.tiles[i][j].data[0].y)
+                : "v"(row_values[i][0])
+                : "memory"
+            );
+            asm volatile(
+                "v_subrev_f32_dpp %0, %1, %0 quad_perm:[2,2,2,2] row_mask:0xf bank_mask:0xf"
+                : "=v"(dst.tiles[i][j].data[1].x)
+                : "v"(row_values[i][0])
+                : "memory"
+            );
+            asm volatile(
+                "v_subrev_f32_dpp %0, %1, %0 quad_perm:[3,3,3,3] row_mask:0xf bank_mask:0xf"
+                : "=v"(dst.tiles[i][j].data[1].y)
+                : "v"(row_values[i][0])
+                : "memory"
+            );
+        }
+    }
+    // row_map<base_ops::sub, T, V>(dst, src, row_values);
 }
 /**
  * @brief Multiplies each row of a tile by row values.

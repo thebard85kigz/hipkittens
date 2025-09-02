@@ -539,8 +539,8 @@ __device__ static inline rt<T2, _rows, _cols, layout>& transpose_inplace(rt<T2, 
 }
 
 #ifdef KITTENS_CDNA4
-template<typename T2, int _rows, int _cols, ducks::rt_layout::all layout>
-__device__ static inline void swap_layout_and_transpose(rt<T2, _cols, _rows, typename ducks::rt_layout::transpose<layout>::type> &result, const rt<T2, _rows, _cols, layout> &tile) {
+template<typename T2, int _rows, int _cols, ducks::rt_layout::all layout, ducks::rt_matrix::all matrix>
+__device__ static inline void swap_layout_and_transpose(rt<T2, _cols, _rows, typename ducks::rt_layout::transpose<layout>::type, matrix> &result, const rt<T2, _rows, _cols, layout, matrix> &tile) {
     #pragma unroll
     for (int i = 0; i < tile.height; i++) {
         #pragma unroll
