@@ -8,12 +8,12 @@ random.seed(0)
 
 # Inputs
 N = 8192
-A = torch.randn(N, N, dtype=torch.bfloat16, device='cuda') / 10.0  
-B = torch.randn(N, N, dtype=torch.bfloat16, device='cuda') / 10.0  
-Bt = B.t().contiguous()  # Transpose B for the kernel
+# A = torch.randn(N, N, dtype=torch.bfloat16, device='cuda') / 10.0  
+# B = torch.randn(N, N, dtype=torch.bfloat16, device='cuda') / 10.0  
+# Bt = B.t().contiguous()  # Transpose B for the kernel
 
-num_warmup = 400
-num_iters = 100
+num_warmup = 500
+num_iters = 300
 
 start_event = torch.cuda.Event(enable_timing=True) # in milliseconds
 end_event = torch.cuda.Event(enable_timing=True)
@@ -21,9 +21,18 @@ flops_ref = (2 * N**3)  # FLOPs for reference
 
 # Reference matmul using PyTorch
 for _ in range(num_warmup):
+    A = torch.randn(N, N, dtype=torch.bfloat16, device='cuda') / 10.0  
+    B = torch.randn(N, N, dtype=torch.bfloat16, device='cuda') / 10.0  
+    Bt = B.t().contiguous()  # Transpose B for the kernel
     C_ref = torch.matmul(A, Bt)
 timings_ref = []
+torch.manual_seed(0)
+random.seed(0)
 for _ in range(num_iters):
+    C = torch.zeros(N, N, dtype=torch.bfloat16, device='cuda')
+    A = torch.randn(N, N, dtype=torch.bfloat16, device='cuda') / 10.0  
+    B = torch.randn(N, N, dtype=torch.bfloat16, device='cuda') / 10.0  
+    Bt = B.t().contiguous()  # Transpose B for the kernel
     torch.cuda.synchronize()
     start_event.record()
     C_ref = torch.matmul(A, Bt)
@@ -41,10 +50,18 @@ print(f"PyTorch reference performance: {tflops_ref:.2f} TFLOPS for {N}x{N} matri
 # Kernel matmul
 C = torch.zeros(N, N, dtype=torch.bfloat16, device='cuda')
 for _ in range(num_warmup):
+    A = torch.randn(N, N, dtype=torch.bfloat16, device='cuda') / 10.0  
+    B = torch.randn(N, N, dtype=torch.bfloat16, device='cuda') / 10.0  
+    Bt = B.t().contiguous()  # Transpose B for the kernel
     tk_kernel.dispatch_micro(A, B, C)
 timings = []
+torch.manual_seed(0)
+random.seed(0)
 for _ in range(num_iters):
     C = torch.zeros(N, N, dtype=torch.bfloat16, device='cuda')
+    A = torch.randn(N, N, dtype=torch.bfloat16, device='cuda') / 10.0  
+    B = torch.randn(N, N, dtype=torch.bfloat16, device='cuda') / 10.0  
+    Bt = B.t().contiguous()  # Transpose B for the kernel
     torch.cuda.synchronize()
     start_event.record()
     tk_kernel.dispatch_micro(A, B, C)
