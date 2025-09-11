@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -6,6 +7,7 @@ from torch.autograd import Function
 
 import tk_kernel_fwd
 import tk_kernel_bkwd
+
 
 
 class HipKittensFlashAttnFn(Function):
@@ -21,18 +23,15 @@ class HipKittensFlashAttnFn(Function):
         B, N, H, D = q_bnhd.shape
         HKV = k_bnhd.shape[2]
         dev = q_bnhd.device
-        out_dtype = q_bnhd.dtype  # remember caller dtype
+        out_dtype = q_bnhd.dtype  
 
-        # Cast to bf16 for kernels (compute) and make contiguous
         q = q_bnhd.to(torch.bfloat16).contiguous()
         k = k_bnhd.to(torch.bfloat16).contiguous()
         v = v_bnhd.to(torch.bfloat16).contiguous()
 
-        # Allocate outputs for the kernels
-        O = torch.empty((B, N, H, D), dtype=torch.bfloat16, device=dev).contiguous()    # BNHD
-        L = torch.empty((B, H, 1, N), dtype=torch.float32,  device=dev).contiguous()    # BHN1 (matches your harness)
+        O = torch.empty((B, N, H, D), dtype=torch.bfloat16, device=dev).contiguous()  
+        L = torch.empty((B, H, 1, N), dtype=torch.float32,  device=dev).contiguous()    
 
-        # Forward kernel
         tk_kernel_fwd.dispatch_fwd(q, k, v, O, L)
 
         if O.isnan().any():
@@ -42,9 +41,7 @@ class HipKittensFlashAttnFn(Function):
             print("L is nan")
             breakpoint()
 
-        # Save for backward
         ctx.save_for_backward(q, k, v, O, L)
-        # Return in caller dtype
         return O.to(out_dtype)
 
     @staticmethod
@@ -58,11 +55,11 @@ class HipKittensFlashAttnFn(Function):
         dO = dO_bnhd.to(torch.bfloat16).contiguous()
 
         # Allocate grads and workspaces
-        dQ_in = torch.empty((B, H, N, D), dtype=torch.bfloat16, device=dev).contiguous()  # BHND (pre-shuffle)
-        dQ    = torch.empty((B, N, H, D), dtype=torch.bfloat16, device=dev).contiguous()  # BNHD
+        dQ_in = torch.empty((B, H, N, D), dtype=torch.bfloat16, device=dev).contiguous()  
+        dQ    = torch.empty((B, N, H, D), dtype=torch.bfloat16, device=dev).contiguous()  
         dK    = torch.empty((B, N, HKV, D), dtype=torch.bfloat16, device=dev).contiguous()  # BNHD
         dV    = torch.empty((B, N, HKV, D), dtype=torch.bfloat16, device=dev).contiguous()  # BNHD
-        delta = torch.empty((B, H, N, 1), dtype=torch.float32,  device=dev).contiguous()  # BH1N (matches your harness)
+        delta = torch.empty((B, H, N, 1), dtype=torch.float32,  device=dev).contiguous() 
 
         if dO.isnan().any():
             print("dO is nan")
@@ -94,6 +91,63 @@ class HipKittensFlashAttnFn(Function):
             breakpoint()
 
         return dQ.to(dO_bnhd.dtype), dK.to(dO_bnhd.dtype), dV.to(dO_bnhd.dtype)
+
+
+    # @staticmethod
+    # def backward(ctx, dO_bnhd: torch.Tensor):
+    #     # Saved tensors from forward
+    #     q_bnhd, k_bnhkd, v_bnhkd, O_bnhd, L = ctx.saved_tensors
+    #     B, N, H, D = q_bnhd.shape
+    #     HKV = k_bnhkd.shape[2]
+    #     assert H % HKV == 0
+    #     G = H // HKV
+    #     dev = dO_bnhd.device
+
+    #     # Work in fp32 for stability; go to BHND for math
+    #     q = q_bnhd.permute(0, 2, 1, 3).to(torch.float32).contiguous()        # [B,H,N,D]
+    #     k = k_bnhkd.permute(0, 2, 1, 3).to(torch.float32).contiguous()        # [B,HKV,N,D]
+    #     v = v_bnhkd.permute(0, 2, 1, 3).to(torch.float32).contiguous()        # [B,HKV,N,D]
+    #     dO = dO_bnhd.permute(0, 2, 1, 3).to(torch.float32).contiguous()       # [B,H,N,D]
+
+    #     # Expand KV to H heads (autograd sum is irrelevant here—we're in backward)
+    #     k_rep = k.repeat_interleave(G, dim=1)                                 # [B,H,N,D]
+    #     v_rep = v.repeat_interleave(G, dim=1)                                 # [B,H,N,D]
+
+    #     # Recompute softmax probs
+    #     scale = 1.0 / math.sqrt(D)
+    #     S = torch.matmul(q, k_rep.transpose(-1, -2)) * scale                  # [B,H,N,N]
+    #     P = torch.softmax(S, dim=-1)                                          # [B,H,N,N]
+
+    #     # Forward context (for Delta term)
+    #     O_rep = torch.matmul(P, v_rep)                                        # [B,H,N,D]
+
+    #     # Backprop
+    #     Delta = (dO * O_rep).sum(dim=-1, keepdim=True)                        # [B,H,N,1]
+    #     dS = P * (torch.matmul(dO, v_rep.transpose(-1, -2)) - Delta)          # [B,H,N,N]
+
+    #     dQ_bhnd = torch.matmul(dS, k_rep) * scale                             # [B,H,N,D]
+    #     dK_rep  = torch.matmul(dS.transpose(-1, -2), q) * scale               # [B,H,N,D]
+    #     dV_rep  = torch.matmul(P.transpose(-1, -2), dO)                       # [B,H,N,D]
+
+    #     # Reduce H → HKV by summing groups
+    #     dK_bhkvnd = dK_rep.view(B, HKV, G, N, D).sum(dim=2)                   # [B,HKV,N,D]
+    #     dV_bhkvnd = dV_rep.view(B, HKV, G, N, D).sum(dim=2)                   # [B,HKV,N,D]
+
+    #     # Return grads in BNHD/BNHKVD and original dtype
+    #     dQ = dQ_bhnd.permute(0, 2, 1, 3).to(dO_bnhd.dtype).contiguous()       # [B,N,H,D]
+    #     dK = dK_bhkvnd.permute(0, 2, 1, 3).to(dO_bnhd.dtype).contiguous()     # [B,N,HKV,D]
+    #     dV = dV_bhkvnd.permute(0, 2, 1, 3).to(dO_bnhd.dtype).contiguous()     # [B,N,HKV,D]
+
+    #     if dQ.isnan().any():
+    #         print("dQ is nan")
+    #         breakpoint()
+    #     if dK.isnan().any():
+    #         print("dK is nan")
+    #         breakpoint()
+    #     if dV.isnan().any():
+    #         print("dV is nan")
+    #         breakpoint()
+    #     return dQ, dK, dV
 
 
 class HipKittensBertSelfAttention(nn.Module):
