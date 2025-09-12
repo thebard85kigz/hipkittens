@@ -13,7 +13,7 @@ H = 16
 N = 4096
 HEAD_D = 64
 D = HEAD_D * H
-DROPOUT_P = 0.00
+DROPOUT_P = 0.01
 
 norm = nn.LayerNorm(D).cuda()
 torch.random.manual_seed(42)

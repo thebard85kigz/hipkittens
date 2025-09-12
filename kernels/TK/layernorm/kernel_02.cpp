@@ -9,11 +9,14 @@ constexpr int H = 16;
 constexpr int N = 4096;
 constexpr int HEAD_D = 64;
 constexpr int D = HEAD_D * H;
-constexpr float DROPOUT_P = 0.00;
+constexpr float DROPOUT_P = 0.01;
 
 
-#define NUM_WORKERS (8) 
+#define NUM_WORKERS (4) 
 #define NUM_THREADS (NUM_WORKERS*kittens::WARP_THREADS)
+
+using G = kittens::group<NUM_WORKERS>;
+
 
 using namespace kittens;
 
@@ -74,12 +77,12 @@ template<int _d_model> struct norm_globals {
     norm_weight_gl norm_weight;
     norm_bias_gl norm_bias;
 
-    const int n_per_tile = 8;
+    const int n_per_tile = 4;
     const int n_tile_size = N / n_per_tile;
 
     dim3 grid() { return dim3(n_tile_size, B, 1); }
     dim3 block() { return dim3(NUM_THREADS); }
-    size_t dynamic_shared_memory() { return NUM_WORKERS*D*sizeof(bf16)*2*1 + D*sizeof(bf16)*2; }
+    size_t dynamic_shared_memory() { return D*sizeof(bf16)*2; }
 };
 
 template<int D> __launch_bounds__(NUM_THREADS, 2)
@@ -92,14 +95,9 @@ __global__ void layernorm_tk(const norm_globals<D> g) {
     extern __shared__ alignment_dummy __shm[];
     shared_allocator al((int*)&__shm[0]);
     static constexpr int d_model = D;
-    using vec_smem_1xD = sv<bf16, d_model>;
-    vec_smem_1xD (&x_s)[NUM_WORKERS] = al.allocate<vec_smem_1xD,NUM_WORKERS>();
-    vec_smem_1xD (&residual_s)[NUM_WORKERS] = al.allocate<vec_smem_1xD,NUM_WORKERS>();  
-    vec_smem_1xD (&norm_weight_s) = al.allocate<vec_smem_1xD>(); 
-    vec_smem_1xD (&norm_bias_s  ) = al.allocate<vec_smem_1xD>();  
-    
-    using vec_reg_1xD = rv<bf16, d_model>;
-    vec_reg_1xD residual_s_reg, x_s_reg, norm_weight_s_reg, norm_bias_s_reg;
+    sv<bf16, d_model> (&norm_weight_s) = al.allocate<sv<bf16, d_model>>(); 
+    sv<bf16, d_model> (&norm_bias_s  ) = al.allocate<sv<bf16, d_model>>();  
+    rv<bf16, d_model> residual_s_reg, x_s_reg, norm_weight_s_reg, norm_bias_s_reg;
 
     // global loads
     if (warpid == 0) {
@@ -107,22 +105,16 @@ __global__ void layernorm_tk(const norm_globals<D> g) {
         load(norm_weight_s, g.norm_weight, {0,0,0,0});
     }
     __syncthreads();
-    load(norm_bias_s_reg, norm_bias_s);
-    load(norm_weight_s_reg, norm_weight_s);
  
     bf16 mean = __float2bfloat16(0.0f);
     bf16 var  = __float2bfloat16(0.0f);      
 
     int idx = seq_start + warpid;
-    load(x_s[warpid], g.x, {0, batch, idx, 0});
-    load(residual_s[warpid], g.residual, {0, batch, idx, 0});
-    __syncthreads();
-
-    load(residual_s_reg, residual_s[warpid]);
-    load(x_s_reg, x_s[warpid]);
+    load(x_s_reg, g.x, {0, batch, idx, 0});
     if constexpr (DROPOUT_P > 0.0f) {
         dropout_mask(x_s_reg, DROPOUT_P); 
     }
+    load(residual_s_reg, g.residual, {0, batch, idx, 0});
     add(residual_s_reg, residual_s_reg, x_s_reg);    
     store(g.o_resid, residual_s_reg, {0, batch, seq_start+warpid, 0});
 
@@ -131,12 +123,14 @@ __global__ void layernorm_tk(const norm_globals<D> g) {
     mean = mean / __float2bfloat16(d_model);
     sub(residual_s_reg, residual_s_reg, mean);  
     mul(x_s_reg, residual_s_reg, residual_s_reg);
+    load(norm_weight_s_reg, norm_weight_s);
     sum(var, x_s_reg);
     var = var / __float2bfloat16(d_model);
     var = __float2bfloat16(sqrt(__bfloat162float(var + __float2bfloat16(1e-05f))));
 
     // compute norm
     div(residual_s_reg, residual_s_reg, var);
+    load(norm_bias_s_reg, norm_bias_s);
     mul(residual_s_reg, residual_s_reg, norm_weight_s_reg); 
     add(residual_s_reg, residual_s_reg, norm_bias_s_reg);
     store(g.o, residual_s_reg, {0, batch, seq_start+warpid, 0});
