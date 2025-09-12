@@ -12,7 +12,7 @@ constexpr int D = HEAD_D * H;
 constexpr float DROPOUT_P = 0.00;
 
 
-#define NUM_WORKERS (4) 
+#define NUM_WORKERS (8) 
 #define NUM_THREADS (NUM_WORKERS*kittens::WARP_THREADS)
 
 using namespace kittens;
@@ -74,7 +74,7 @@ template<int _d_model> struct norm_globals {
     norm_weight_gl norm_weight;
     norm_bias_gl norm_bias;
 
-    const int n_per_tile = 4;
+    const int n_per_tile = 8;
     const int n_tile_size = N / n_per_tile;
 
     dim3 grid() { return dim3(n_tile_size, B, 1); }
@@ -86,14 +86,11 @@ template<int D> __launch_bounds__(NUM_THREADS, 2)
 __global__ void layernorm_tk(const norm_globals<D> g) {
 
     auto warpid = kittens::warpid();
-    auto lane   = kittens::laneid();
-
     const int batch = blockIdx.y;
     const int seq_start = blockIdx.x*g.n_per_tile;
 
     extern __shared__ alignment_dummy __shm[];
     shared_allocator al((int*)&__shm[0]);
-
     static constexpr int d_model = D;
     using vec_smem_1xD = sv<bf16, d_model>;
     vec_smem_1xD (&x_s)[NUM_WORKERS] = al.allocate<vec_smem_1xD,NUM_WORKERS>();
@@ -110,6 +107,8 @@ __global__ void layernorm_tk(const norm_globals<D> g) {
         load(norm_weight_s, g.norm_weight, {0,0,0,0});
     }
     __syncthreads();
+    load(norm_bias_s_reg, norm_bias_s);
+    load(norm_weight_s_reg, norm_weight_s);
  
     bf16 mean = __float2bfloat16(0.0f);
     bf16 var  = __float2bfloat16(0.0f);      
@@ -117,19 +116,17 @@ __global__ void layernorm_tk(const norm_globals<D> g) {
     int idx = seq_start + warpid;
     load(x_s[warpid], g.x, {0, batch, idx, 0});
     load(residual_s[warpid], g.residual, {0, batch, idx, 0});
+    __syncthreads();
+
     load(residual_s_reg, residual_s[warpid]);
     load(x_s_reg, x_s[warpid]);
-    load(norm_weight_s_reg, norm_weight_s);
-    load(norm_bias_s_reg, norm_bias_s);
-
-    __syncthreads();
-    
     if constexpr (DROPOUT_P > 0.0f) {
         dropout_mask(x_s_reg, DROPOUT_P); 
     }
     add(residual_s_reg, residual_s_reg, x_s_reg);    
     store(g.o_resid, residual_s_reg, {0, batch, seq_start+warpid, 0});
 
+    // mean and variance
     sum(mean, residual_s_reg);
     mean = mean / __float2bfloat16(d_model);
     sub(residual_s_reg, residual_s_reg, mean);  
@@ -142,9 +139,6 @@ __global__ void layernorm_tk(const norm_globals<D> g) {
     div(residual_s_reg, residual_s_reg, var);
     mul(residual_s_reg, residual_s_reg, norm_weight_s_reg); 
     add(residual_s_reg, residual_s_reg, norm_bias_s_reg);
-    __syncthreads();
-
-    // save output
     store(g.o, residual_s_reg, {0, batch, seq_start+warpid, 0});
 }
 
