@@ -25,8 +25,8 @@ for device in ['mi300x', 'mi325x', 'mi350x', 'mi355x']:
     width = 0.3
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    bars0 = ax.bar(x - width, aiter_tflops, width, label='AITER (AMD)', alpha=0.8, color=colors[1])
-    bars1 = ax.bar(x, tk_tflops, width, label='ThunderKittens', alpha=0.8, color=colors[3])
+    bars0 = ax.bar(x - width, aiter_tflops, width, label='AITER (AMD)', color=colors[1])
+    bars1 = ax.bar(x, tk_tflops, width, label='ThunderKittens', color=colors[3])
 
     max_tflops = max(max(aiter_tflops), max(tk_tflops))
 

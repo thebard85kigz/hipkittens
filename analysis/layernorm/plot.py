@@ -30,14 +30,14 @@ for device in ['mi300x', 'mi325x', 'mi350x', 'mi355x']:
     width = 0.3
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    bars0 = ax.bar(x - width, pytorch_tflops, width, label='PyTorch', alpha=0.8, color=colors[0])
+    bars0 = ax.bar(x - width, pytorch_tflops, width, label='PyTorch', color=colors[0])
      
     if compiled_tflops is not None:
-        bars1 = ax.bar(x, compiled_tflops, width, label='Compiled PyTorch', alpha=0.8, color=colors[1])
+        bars1 = ax.bar(x, compiled_tflops, width, label='Compiled PyTorch', color=colors[1])
     else:
         bars1 = None
 
-    bars2 = ax.bar(x + width, tk_tflops, width, label='ThunderKittens', alpha=0.8, color=colors[3])
+    bars2 = ax.bar(x + width, tk_tflops, width, label='ThunderKittens', color=colors[3])
 
     if compiled_tflops is not None:
         max_tflops = max(max(pytorch_tflops), max(compiled_tflops), max(tk_tflops))

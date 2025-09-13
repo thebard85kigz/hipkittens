@@ -148,8 +148,8 @@ o_diff_aiter = (o - o_aiter).abs()
 print("AITer max_diff:", o_diff_aiter.max().item())
 
 
-TK
-print("\nTK (PyTorch):")
+# TK
+print("\nTK:")
 o_tk = torch.zeros_like(o).bfloat16()
 sin_tk = sin_in.to(torch.bfloat16).cuda()
 cos_tk = cos_in.to(torch.bfloat16).cuda()

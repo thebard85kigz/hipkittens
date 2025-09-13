@@ -33,27 +33,27 @@ for device in ['mi300x', 'mi325x', 'mi350x', 'mi355x']:
 
     # Create bar chart
     x = np.arange(len(matrix_sizes))
-    width = 0.3
+    width = 0.22
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    bars0 = ax.bar(x - width, pytorch_tflops, width, label='PyTorch', alpha=0.8, color=colors[0])
+    bars0 = ax.bar(x - width, pytorch_tflops, width, label='PyTorch', color=colors[0])
      
     if aiter_tflops is not None:
-        bars1 = ax.bar(x, aiter_tflops, width, label='AITER (AMD)', alpha=0.8, color=colors[1])
+        bars1 = ax.bar(x, aiter_tflops, width, label='AITER (AMD)', color=colors[1])
     else:
         bars1 = None
 
     if hipblaslt_tflops is not None:
-        bars2 = ax.bar(x + width, hipblaslt_tflops, width, label='HipblasLT', alpha=0.8, color=colors[2])
+        bars2 = ax.bar(x + width, hipblaslt_tflops, width, label='HipblasLT', color=colors[2])
     else:
         bars2 = None
 
     if aiter_tflops is not None and hipblaslt_tflops is not None:
-        bars3 = ax.bar(x + 2 * width, tk_tflops, width, label='ThunderKittens', alpha=0.8, color=colors[3])
+        bars3 = ax.bar(x + 2 * width, tk_tflops, width, label='ThunderKittens', color=colors[3])
     elif aiter_tflops is not None:
-        bars3 = ax.bar(x + width, tk_tflops, width, label='ThunderKittens', alpha=0.8, color=colors[3])
+        bars3 = ax.bar(x + width, tk_tflops, width, label='ThunderKittens', color=colors[3])
     else:
-        bars3 = ax.bar(x, tk_tflops, width, label='ThunderKittens', alpha=0.8, color=colors[3])
+        bars3 = ax.bar(x, tk_tflops, width, label='ThunderKittens', color=colors[3])
 
     if aiter_tflops is not None:
         max_tflops = max(max(pytorch_tflops), max(aiter_tflops), max(tk_tflops))
