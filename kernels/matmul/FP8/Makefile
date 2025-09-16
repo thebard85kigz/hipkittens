@@ -17,6 +17,8 @@ else ifeq ($(COMP_LEVEL),profile)
 HIPFLAGS+= -O3 -save-temps=obj -Rpass-analysis=kernel-resource-usage
 endif
 
+HIPFLAGS+= -DFP8_USE_16x128
+
 TARGET=matmul
 SRC=matmul.cu
 BUILD_DIR=build
