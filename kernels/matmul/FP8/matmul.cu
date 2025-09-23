@@ -413,9 +413,10 @@ __device__ inline void load_gl_to_st(ST& dst, const GL& src, const COORD& idx)
 
         uintptr_t offset_in_st = (row_offset * ST::underlying_cols + col_offset) * sizeof(T);
         offset_in_st ^= (((offset_in_st % (256*8)) >> 8) << 4);
+        offset_in_st /= sizeof(T);
 
-        row_offset = offset_in_st / (ST::underlying_cols * sizeof(T));
-        col_offset = offset_in_st % (ST::underlying_cols * sizeof(T)) / sizeof(T);
+        row_offset = offset_in_st / (ST::underlying_cols);
+        col_offset = offset_in_st % (ST::underlying_cols);
 
         uintptr_t offset_in_global = (row_offset * row_stride + col_offset) * sizeof(T);
 
