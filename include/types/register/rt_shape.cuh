@@ -37,6 +37,16 @@ using rt_16x32_4 = rt_shape<16, 32, 4>;
 template<typename T>
 concept all = std::is_same_v<T, rt_16x16> || std::is_same_v<T, rt_32x32> || std::is_same_v<T, rt_16x32> || std::is_same_v<T, rt_32x16> || std::is_same_v<T, rt_32x16_4> || std::is_same_v<T, rt_16x32_4>;
 
+/**
+ * @brief A struct to generate a transposed layout.
+ * Note: on CDNA4, the accumulator layout becomes the col layout when transposed.
+ */
+ template<all L> struct transpose      { using type = rt_16x16; };
+ template<>      struct transpose<rt_32x32> { using type = rt_32x32; };
+ template<>      struct transpose<rt_16x32> { using type = rt_32x16; };
+ template<>      struct transpose<rt_32x16> { using type = rt_16x32; };
+ template<>      struct transpose<rt_32x16_4> { using type = rt_16x32_4; };
+ template<>      struct transpose<rt_16x32_4> { using type = rt_32x16_4; };
 } // namespace rt_shape
 } // namespace ducks
 } // namespace kittens

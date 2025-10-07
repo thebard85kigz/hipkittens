@@ -24,11 +24,10 @@ namespace kittens {
  * @param[in] src The source matrix on which to perform the reduction.
  * @param[in] src_accum The initial value of the accumulator, used when reset is false.
  */
-#ifdef KITTENS_CDNA4
-template<typename op, ducks::rv::all V, ducks::rt::row_like T, bool reset>
+template<typename op, ducks::rv::all V, ducks::rt::row_layout T, bool reset>
 __device__ static inline void row_reduce(V &row_accum, const T &src, const V &src_accum) {
     // I actually like these static asserts because they give more verbose errors when things go wrong.
-    static_assert(std::is_same_v<typename V::layout, typename rt_base<typename T::T, typename T::layout, typename T::matrix_layout>::col_vec_layout>); // compatible layout
+    static_assert(std::is_same_v<typename V::layout, typename rt_base<typename T::T, typename T::layout, typename T::shape>::col_vec_layout>); // compatible layout
     static_assert(std::is_same_v<typename V::T2, typename T::dtype>); // compatible type
     static_assert(V::outer_dim == T::height); // compatible size
 
@@ -39,14 +38,14 @@ __device__ static inline void row_reduce(V &row_accum, const T &src, const V &sr
     #pragma unroll
     for(int i = 0; i < src.height; i++) {
         dtype accum_packed = src.tiles[i][0].data[0];
-        for (int k = 1; k < src.packed_per_tile; k++) {
+        for (int k = 1; k < src.packed_per_base_tile; k++) {
             accum_packed = op::template op<dtype>(accum_packed, src.tiles[i][0].data[k]);
         }
 
         #pragma unroll
         for(int j = 1; j < src.width; j++) {
             #pragma unroll
-            for (int k = 0; k < src.packed_per_tile; k++) {
+            for (int k = 0; k < src.packed_per_base_tile; k++) {
                 accum_packed = op::template op<dtype>(accum_packed, src.tiles[i][j].data[k]);
             }
         }
@@ -75,52 +74,6 @@ __device__ static inline void row_reduce(V &row_accum, const T &src, const V &sr
         }
     }
 }
-#else
-template<typename op, ducks::rv::all V, ducks::rt::row_layout T, bool reset>
-__device__ static inline void row_reduce(V &row_accum, const T &src, const V &src_accum) {
-    // I actually like these static asserts because they give more verbose errors when things go wrong.
-    static_assert(std::is_same_v<typename V::layout, typename rt_base<typename T::T, typename T::layout, typename T::matrix_layout>::col_vec_layout>); // compatible layout
-    static_assert(std::is_same_v<typename V::T2, typename T::dtype>); // compatible type
-    static_assert(V::outer_dim == T::height); // compatible size
-
-    using dtype = T::dtype;
-    using RT2 = V::dtype;
-    using RT = base_types::packing<RT2>::unpacked_type;
-
-    const int leader = laneid() % 16;
-
-    #pragma unroll
-    for(int i = 0; i < src.height; i++) {
-        dtype accum_packed = src.tiles[i][0].data[0];
-        for (int k = 1; k < src.packed_per_tile; k++) {
-            accum_packed = op::template op<dtype>(accum_packed, src.tiles[i][0].data[k]);
-        }
-
-        #pragma unroll
-        for(int j = 1; j < src.width; j++) {
-            #pragma unroll
-            for (int k = 0; k < src.packed_per_tile; k++) {
-                accum_packed = op::template op<dtype>(accum_packed, src.tiles[i][j].data[k]);
-            }
-        }
-        RT accum_single = op::template op<RT>(accum_packed.x, accum_packed.y);
-        // Now we need to do a lil shuffle to make everyone happy.
-
-        accum_single = op::template op<RT>(accum_single, packed_shfl_down(MASK_ALL, accum_single, 32));
-        accum_single = op::template op<RT>(accum_single, packed_shfl_down(MASK_ALL, accum_single, 16));
-
-        if(reset) {
-            row_accum[i][0] = accum_single;
-        }
-        else {
-            row_accum[i][0] = op::template op<RT>(src_accum[i][0], accum_single);
-        }
-
-        row_accum[i][0] = packed_shfl(MASK_ALL, row_accum[i][0], leader);
-        row_accum[i][0] = row_accum[i][0];
-    }
-}
-#endif
 
 /**
  * @brief Perform a row-wise reduction on a matrix in column-major layout.
@@ -136,29 +89,21 @@ __device__ static inline void row_reduce(V &row_accum, const T &src, const V &sr
  * @param[in] src The source matrix on which to perform the reduction.
  * @param[in] src_accum The initial value of the accumulator, used when reset is false.
  */
-#ifdef KITTENS_CDNA4
-template<typename op, ducks::rv::all V, ducks::rt::col_like T, bool reset>
-#else
+
 template<typename op, ducks::rv::all V, ducks::rt::col_layout T, bool reset>
-#endif
 __device__ static inline void row_reduce(V &row_accum, const T &src, const V &src_accum) {
     // I actually like these static asserts because they give more verbose errors when things go wrong.
-    static_assert(std::is_same_v<typename V::layout, typename rt_base<typename T::T, typename T::layout, typename T::matrix_layout>::col_vec_layout>); // compatible layout
+    static_assert(std::is_same_v<typename V::layout, typename rt_base<typename T::T, typename T::layout, typename T::shape>::col_vec_layout>); // compatible layout
     static_assert(std::is_same_v<typename V::dtype, typename T::dtype>); // compatible type
     static_assert(V::outer_dim == T::height); // compatible size
 
     using RT2 = V::dtype;
     using RT = base_types::packing<RT2>::unpacked_type;
 
-    #ifdef KITTENS_CDNA4
     const int leader = (laneid() / 32) * 32;
-    const int packed_per_tile = src.packed_per_tile;
+    const int packed_per_tile = src.packed_per_base_tile;
     const int max_shift = 16;
-    #else
-    const int leader = (laneid() / 16) * 16;
-    const int packed_per_tile = 2;
-    const int max_shift = 8;
-    #endif
+
 
     RT2 accum[packed_per_tile];
 
@@ -218,29 +163,20 @@ __device__ static inline void row_reduce(V &row_accum, const T &src, const V &sr
  * @param[in] src The source matrix on which to perform the reduction.
  * @param[in] src_accum The initial value of the accumulator, used when reset is false.
  */
-#ifdef KITTENS_CDNA4
-template<typename op, ducks::rv::all V, ducks::rt::row_like T, bool reset>
-#else
+
 template<typename op, ducks::rv::all V, ducks::rt::row_layout T, bool reset>
-#endif
 __device__ static inline void col_reduce(V &col_accum, const T &src, const V &src_accum) {
     // I actually like these static asserts because they give more verbose errors when things go wrong.
-    static_assert(std::is_same_v<typename V::layout, typename rt_base<typename T::T, typename T::layout, typename T::matrix_layout>::row_vec_layout>); // compatible layout
+    static_assert(std::is_same_v<typename V::layout, typename rt_base<typename T::T, typename T::layout, typename T::shape>::row_vec_layout>); // compatible layout
     static_assert(std::is_same_v<typename V::dtype, typename T::dtype>); // compatible type
     static_assert(V::outer_dim == T::width); // compatible size
 
     using RT2 = V::dtype;
     using RT = base_types::packing<RT2>::unpacked_type;
 
-    #ifdef KITTENS_CDNA4
     const int leader = (laneid() / 32) * 32;
-    const int packed_per_tile = src.packed_per_tile;
+    const int packed_per_tile = src.packed_per_base_tile;
     const int max_shift = 16;
-    #else
-    const int leader = (laneid() / 16) * 16;
-    const int packed_per_tile = 2;
-    const int max_shift = 8;
-    #endif
 
     RT2 accum[packed_per_tile];
 
@@ -298,14 +234,13 @@ __device__ static inline void col_reduce(V &col_accum, const T &src, const V &sr
  * @param[in] src The source matrix on which to perform the reduction.
  * @param[in] src_accum The initial value of the accumulator, used when reset is false.
  */
-#ifdef KITTENS_CDNA4
-template<typename op, ducks::rv::all V, ducks::rt::col_like T, bool reset>
+template<typename op, ducks::rv::all V, ducks::rt::col_layout T, bool reset>
 __device__ static inline void col_reduce(V &col_accum, const T &src, const V &src_accum) {
     using RT = V::dtype;
     using RT2 = base_types::packing<RT>::packed_type;
 
     // I actually like these static asserts because they give more verbose errors when things go wrong.
-    static_assert(std::is_same_v<typename V::layout, typename rt_base<typename T::T, typename T::layout, typename T::matrix_layout>::row_vec_layout>); // compatible layout
+    static_assert(std::is_same_v<typename V::layout, typename rt_base<typename T::T, typename T::layout, typename T::shape>::row_vec_layout>); // compatible layout
     static_assert(std::is_same_v<RT2, typename T::dtype>); // compatible type
     static_assert(V::outer_dim == T::width); // compatible size
 
@@ -313,13 +248,13 @@ __device__ static inline void col_reduce(V &col_accum, const T &src, const V &sr
     for(int j = 0; j < src.width; j++) { // note now width is the outer loop
         RT2 accum_packed = src.tiles[0][j].data[0];
         #pragma unroll
-        for(int k = 1; k < src.packed_per_tile; k++) {
+        for(int k = 1; k < src.packed_per_base_tile; k++) {
             accum_packed = op::template op<RT2>(accum_packed, src.tiles[0][j].data[k]);
         }
         #pragma unroll
         for(int i = 1; i < src.height; i++) { // and height is the inner loop
             #pragma unroll
-            for(int k = 0; k < src.packed_per_tile; k++) {
+            for(int k = 0; k < src.packed_per_base_tile; k++) {
                 accum_packed = op::template op<RT2>(accum_packed, src.tiles[i][j].data[k]);
             }
         }
@@ -354,48 +289,6 @@ __device__ static inline void col_reduce(V &col_accum, const T &src, const V &sr
         }
     }
 }
-#else
-template<typename op, ducks::rv::all V, ducks::rt::col_layout T, bool reset>
-__device__ static inline void col_reduce(V &col_accum, const T &src, const V &src_accum) {
-    // I actually like these static asserts because they give more verbose errors when things go wrong.
-    static_assert(std::is_same_v<typename V::layout, typename rt_base<typename T::T, typename T::layout, typename T::matrix_layout>::row_vec_layout>); // compatible layout
-    static_assert(std::is_same_v<typename V::dtype, typename T::dtype>); // compatible type
-    static_assert(V::outer_dim == T::width); // compatible size
-
-    using RT2 = V::dtype;
-    using RT = base_types::packing<RT2>::unpacked_type;
-
-    const int leader = laneid() % 16;
-    #pragma unroll
-    for(int j = 0; j < src.width; j++) { // note now width is the outer loop
-        RT2 accum_packed = op::template op<RT2>(src.tiles[0][j].data[0], src.tiles[0][j].data[1]);
-        #pragma unroll
-        for(int i = 1; i < src.height; i++) { // and height is the inner loop
-            #pragma unroll
-            for(int k = 0; k < src.packed_per_tile; k++) {
-                accum_packed = op::template op<RT2>(accum_packed, src.tiles[i][j].data[k]);
-            }
-        }
-
-        RT accum_single = op::template op<RT>(accum_packed.x, accum_packed.y);
-
-        // Now we need to do a lil shuffle to make everyone happy.
-
-        accum_single = op::template op<RT>(accum_single, packed_shfl_down(MASK_ALL, accum_single, 32));
-        accum_single = op::template op<RT>(accum_single, packed_shfl_down(MASK_ALL, accum_single, 16));
-
-        if(reset) {
-            col_accum[j][0].x = accum_single;
-        }
-        else {
-            col_accum[j][0].x = op::template op<RT>(src_accum[j][0].x, accum_single);
-        }
-
-        col_accum[j][0].x = packed_shfl(MASK_ALL, col_accum[j][0].x, leader);
-        col_accum[j][0].y = col_accum[j][0].x;
-    }
-}
-#endif
 
 /* ----------  WRAPPERS FOR PRETTINESS  ---------- */
 
