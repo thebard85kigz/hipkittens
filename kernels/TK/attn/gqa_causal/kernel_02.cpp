@@ -27,55 +27,197 @@ template<int D, typename T=float, typename L=accum_col_l> using attn_tile = rt<T
 
 /**********************************************************/
 
-template<ducks::rt::accumulator_col_layout RT>
-__device__ inline static void mask_kv_tile(
-    RT &dst,
-    const int q_abs,
-    const int k_abs
-) {
-    const int lane = laneid();
-    const int col = lane & 31;
-    const int q_pos = q_abs * Q_BLOCK_SIZE + col;
+template <class T>
+__device__ inline uint32_t& as_u32_ref(T& v) {
+    // reinterpret an lvalue (float, bf16-packed, etc.) as a 32-bit lane
+    return *reinterpret_cast<uint32_t*>(&v);
+}
 
-    const float neg_inf = kittens::base_types::constants<float>::neg_infty();
+template<int THR_X, int THR_Y>
+__device__ inline void mask_vec2_imm(uint32_t rel_vgpr, uint32_t neg_inf_vgpr,
+                                     uint32_t& x_ref, uint32_t& y_ref) {
+    uint32_t ox, oy;
+    asm volatile(
+        // x: rel < THR_X ?
+        "v_cmp_lt_i32_e64 vcc, %4, %5\n\t"
+        "v_cndmask_b32_e32 %0, %2, %6, vcc\n\t"
+        // y: rel < THR_Y ?
+        "v_cmp_lt_i32_e64 vcc, %4, %7\n\t"
+        "v_cndmask_b32_e32 %1, %3, %6, vcc\n\t"
+        : "=&v"(ox), "=&v"(oy)
+        : "v"(x_ref), "v"(y_ref), "v"(rel_vgpr),
+          "n"(THR_X), "v"(neg_inf_vgpr), "n"(THR_Y)
+        : "vcc"
+    );
+    x_ref = ox; y_ref = oy;
+}
+
+template<ducks::rt::accumulator_col_layout RT>
+__device__ inline void mask_kv_tile(RT &dst, int q_abs, int k_abs) {
+    const int lane = laneid();
+    const int col  = lane & 31;
+
+    const int q_base = q_abs * Q_BLOCK_SIZE;
+    const int k_base = k_abs * KV_BLOCK_SIZE;
+    const int q_pos  = q_base + col;
 
     #pragma unroll
     for (int i = 0; i < dst.height; ++i) {
+        const int row_base = (i*32) + ((lane >> 5) << 2);
+        const uint32_t rel = static_cast<uint32_t>(q_pos - (k_base + row_base));
+
+        // ONE v_mov per (i): keep -inf in a VGPR to satisfy e32 cndmask
+        uint32_t neg_inf_v;
+        asm volatile("v_mov_b32 %0, 0xff800000" : "=v"(neg_inf_v));
+
         #pragma unroll
         for (int j = 0; j < dst.width; ++j) {
-            #pragma unroll
-            for (int ii = 0; ii < 4; ++ii) {
-                const int base_row = (i * 32 + ii * 8 + ((lane >> 5) << 2));
-                
-                int k_pos_0 = k_abs * KV_BLOCK_SIZE + base_row + 0;
-                int k_pos_1 = k_abs * KV_BLOCK_SIZE + base_row + 1;
-                int k_pos_2 = k_abs * KV_BLOCK_SIZE + base_row + 2;
-                int k_pos_3 = k_abs * KV_BLOCK_SIZE + base_row + 3;
+            // references to 32-bit lanes (no copies)
+            auto& d0x = *reinterpret_cast<uint32_t*>(&dst.tiles[i][j].data[0].x);
+            auto& d0y = *reinterpret_cast<uint32_t*>(&dst.tiles[i][j].data[0].y);
+            auto& d1x = *reinterpret_cast<uint32_t*>(&dst.tiles[i][j].data[1].x);
+            auto& d1y = *reinterpret_cast<uint32_t*>(&dst.tiles[i][j].data[1].y);
+            auto& d2x = *reinterpret_cast<uint32_t*>(&dst.tiles[i][j].data[2].x);
+            auto& d2y = *reinterpret_cast<uint32_t*>(&dst.tiles[i][j].data[2].y);
+            auto& d3x = *reinterpret_cast<uint32_t*>(&dst.tiles[i][j].data[3].x);
+            auto& d3y = *reinterpret_cast<uint32_t*>(&dst.tiles[i][j].data[3].y);
+            auto& d4x = *reinterpret_cast<uint32_t*>(&dst.tiles[i][j].data[4].x);
+            auto& d4y = *reinterpret_cast<uint32_t*>(&dst.tiles[i][j].data[4].y);
+            auto& d5x = *reinterpret_cast<uint32_t*>(&dst.tiles[i][j].data[5].x);
+            auto& d5y = *reinterpret_cast<uint32_t*>(&dst.tiles[i][j].data[5].y);
+            auto& d6x = *reinterpret_cast<uint32_t*>(&dst.tiles[i][j].data[6].x);
+            auto& d6y = *reinterpret_cast<uint32_t*>(&dst.tiles[i][j].data[6].y);
+            auto& d7x = *reinterpret_cast<uint32_t*>(&dst.tiles[i][j].data[7].x);
+            auto& d7y = *reinterpret_cast<uint32_t*>(&dst.tiles[i][j].data[7].y);
 
-                asm volatile(
-                    "v_cmp_lt_i32_e64 s[68:69], %8, %4\n\t"
-                    "v_cmp_lt_i32_e64 s[70:71], %8, %5\n\t"
-                    "v_cndmask_b32_e64 %0, %9, %13, s[68:69]\n\t"
-                    "v_cndmask_b32_e64 %1, %10, %13, s[70:71]\n\t"
-                    "v_cmp_lt_i32_e64 s[68:69], %8, %6\n\t"
-                    "v_cmp_lt_i32_e64 s[70:71], %8, %7\n\t"
-                    "v_cndmask_b32_e64 %2, %11, %13, s[68:69]\n\t"
-                    "v_cndmask_b32_e64 %3, %12, %13, s[70:71]"
-                    : "=v"(dst.tiles[i][j].data[ii*2].x), "=v"(dst.tiles[i][j].data[ii*2].y), "=v"(dst.tiles[i][j].data[ii*2 + 1].x), "=v"(dst.tiles[i][j].data[ii*2 + 1].y)
-                    : "v"(k_pos_0), "v"(k_pos_1), "v"(k_pos_2), "v"(k_pos_3),  // %4-7
-                      "v"(q_pos),                                                 // %8
-                      "v"(dst.tiles[i][j].data[ii*2].x),                         // %9
-                      "v"(dst.tiles[i][j].data[ii*2].y),                         // %10
-                      "v"(dst.tiles[i][j].data[ii*2 + 1].x),                     // %11
-                      "v"(dst.tiles[i][j].data[ii*2 + 1].y),                     // %12
-                      "v"(neg_inf)                                                // %13
-                    : "s68", "s69", "s70", "s71"
-                );
-            }
+            // ii = 0 → offsets 0,1 and 2,3
+            mask_vec2_imm<0, 1 >(rel, neg_inf_v, d0x, d0y);
+            mask_vec2_imm<2, 3 >(rel, neg_inf_v, d1x, d1y);
+
+            // ii = 1 → offsets 8,9 and 10,11
+            mask_vec2_imm<8, 9 >(rel, neg_inf_v, d2x, d2y);
+            mask_vec2_imm<10,11>(rel, neg_inf_v, d3x, d3y);
+
+            // ii = 2 → offsets 16,17 and 18,19
+            mask_vec2_imm<16,17>(rel, neg_inf_v, d4x, d4y);
+            mask_vec2_imm<18,19>(rel, neg_inf_v, d5x, d5y);
+
+            // ii = 3 → offsets 24,25 and 26,27
+            mask_vec2_imm<24,25>(rel, neg_inf_v, d6x, d6y);
+            mask_vec2_imm<26,27>(rel, neg_inf_v, d7x, d7y);
         }
     }
 }
 
+
+// template<ducks::rt::accumulator_col_layout RT>
+// __device__ inline static void mask_kv_tile(
+//     RT &dst,
+//     const int q_abs,
+//     const int k_abs
+// ) {
+//     const int lane = laneid();
+//     const int col = lane & 31;
+    
+//     const float neg_inf = kittens::base_types::constants<float>::neg_infty();
+    
+//     const int q_base = q_abs * Q_BLOCK_SIZE;
+//     const int k_base = k_abs * KV_BLOCK_SIZE;
+//     const int base_offset = k_base - q_base;
+
+//     #pragma unroll
+//     for (int i = 0; i < dst.height; ++i) {
+//         const int row_base = (i * 32) + ((lane >> 5) << 2);
+
+//         #pragma unroll
+//         for (int j = 0; j < dst.width; ++j) {
+            
+//             // Compute rel_pos ONCE for all 32 elements in this (i,j) tile
+//             int rel_pos;
+//             int q_pos  = q_abs * Q_BLOCK_SIZE + col;
+//             int rb_v   = (i * 32) + ((lane >> 5) << 2);
+//             int kb_s   = k_abs * KV_BLOCK_SIZE;
+
+//             asm volatile(
+//                 "v_add_i32 %0, %1, %2\n\t"
+//                 "v_sub_i32 %0, %3, %0\n\t"
+//                 : "=&v"(rel_pos)
+//                 : "v"(rb_v), "s"(kb_s), "v"(q_pos)
+//             );
+
+//             // Create local references to avoid repeated indexing
+//             auto& d0x = dst.tiles[i][j].data[0].x;
+//             auto& d0y = dst.tiles[i][j].data[0].y;
+//             auto& d1x = dst.tiles[i][j].data[1].x;
+//             auto& d1y = dst.tiles[i][j].data[1].y;
+//             auto& d2x = dst.tiles[i][j].data[2].x;
+//             auto& d2y = dst.tiles[i][j].data[2].y;
+//             auto& d3x = dst.tiles[i][j].data[3].x;
+//             auto& d3y = dst.tiles[i][j].data[3].y;
+//             auto& d4x = dst.tiles[i][j].data[4].x;
+//             auto& d4y = dst.tiles[i][j].data[4].y;
+//             auto& d5x = dst.tiles[i][j].data[5].x;
+//             auto& d5y = dst.tiles[i][j].data[5].y;
+//             auto& d6x = dst.tiles[i][j].data[6].x;
+//             auto& d6y = dst.tiles[i][j].data[6].y;
+//             auto& d7x = dst.tiles[i][j].data[7].x;
+//             auto& d7y = dst.tiles[i][j].data[7].y;
+
+//             asm volatile(
+//                 // r = 0,1,2,3
+//                 "v_cmp_lt_i32_e64 s[68:69], %16, 0\n\t"
+//                 "v_cmp_lt_i32_e64 s[70:71], %16, 1\n\t"
+//                 "v_cndmask_b32_e64 %0, %0, %17, s[68:69]\n\t"
+//                 "v_cndmask_b32_e64 %1, %1, %17, s[70:71]\n\t"
+//                 "v_cmp_lt_i32_e64 s[68:69], %16, 2\n\t"
+//                 "v_cmp_lt_i32_e64 s[70:71], %16, 3\n\t"
+//                 "v_cndmask_b32_e64 %2, %2, %17, s[68:69]\n\t"
+//                 "v_cndmask_b32_e64 %3, %3, %17, s[70:71]\n\t"
+
+//                 // r = 8,9,10,11
+//                 "v_cmp_lt_i32_e64 s[68:69], %16, 8\n\t"
+//                 "v_cmp_lt_i32_e64 s[70:71], %16, 9\n\t"
+//                 "v_cndmask_b32_e64 %4, %4, %17, s[68:69]\n\t"
+//                 "v_cndmask_b32_e64 %5, %5, %17, s[70:71]\n\t"
+//                 "v_cmp_lt_i32_e64 s[68:69], %16, 10\n\t"
+//                 "v_cmp_lt_i32_e64 s[70:71], %16, 11\n\t"
+//                 "v_cndmask_b32_e64 %6, %6, %17, s[68:69]\n\t"
+//                 "v_cndmask_b32_e64 %7, %7, %17, s[70:71]\n\t"
+
+//                 // r = 16,17,18,19
+//                 "v_cmp_lt_i32_e64 s[68:69], %16, 16\n\t"
+//                 "v_cmp_lt_i32_e64 s[70:71], %16, 17\n\t"
+//                 "v_cndmask_b32_e64 %8, %8, %17, s[68:69]\n\t"
+//                 "v_cndmask_b32_e64 %9, %9, %17, s[70:71]\n\t"
+//                 "v_cmp_lt_i32_e64 s[68:69], %16, 18\n\t"
+//                 "v_cmp_lt_i32_e64 s[70:71], %16, 19\n\t"
+//                 "v_cndmask_b32_e64 %10, %10, %17, s[68:69]\n\t"
+//                 "v_cndmask_b32_e64 %11, %11, %17, s[70:71]\n\t"
+
+//                 // r = 24,25,26,27
+//                 "v_cmp_lt_i32_e64 s[68:69], %16, 24\n\t"
+//                 "v_cmp_lt_i32_e64 s[70:71], %16, 25\n\t"
+//                 "v_cndmask_b32_e64 %12, %12, %17, s[68:69]\n\t"
+//                 "v_cndmask_b32_e64 %13, %13, %17, s[70:71]\n\t"
+//                 "v_cmp_lt_i32_e64 s[68:69], %16, 26\n\t"
+//                 "v_cmp_lt_i32_e64 s[70:71], %16, 27\n\t"
+//                 "v_cndmask_b32_e64 %14, %14, %17, s[68:69]\n\t"
+//                 "v_cndmask_b32_e64 %15, %15, %17, s[70:71]\n\t"
+
+//                 : "+v"(d0x), "+v"(d0y),
+//                   "+v"(d1x), "+v"(d1y),
+//                   "+v"(d2x), "+v"(d2y),
+//                   "+v"(d3x), "+v"(d3y),
+//                   "+v"(d4x), "+v"(d4y),
+//                   "+v"(d5x), "+v"(d5y),
+//                   "+v"(d6x), "+v"(d6y),
+//                   "+v"(d7x), "+v"(d7y)
+//                 : "v"(rel_pos), "v"(neg_inf)
+//                 : "s68","s69","s70","s71"
+//             );
+//         }
+//     }
+// }
 
 /**********************************************************/
 
@@ -182,9 +324,7 @@ __global__ void attend_ker(const attn_globals<D> g) {
     G::load<1, false>(v_smem[1], g.Vg, {batch_idx, 1, head_idx_kv, 0}, swizzled_offsets_V);
     k_curr_idx = 1; 
     k_idx_buf0 = 2;
-    // __builtin_amdgcn_s_waitcnt(0);
-    asm volatile("s_waitcnt lgkmcnt(0)");
-    asm volatile("s_waitcnt vmcnt(12)");
+    __builtin_amdgcn_s_waitcnt(0);
     __builtin_amdgcn_sched_barrier(0);
     __builtin_amdgcn_s_barrier();
     __builtin_amdgcn_sched_barrier(0);
