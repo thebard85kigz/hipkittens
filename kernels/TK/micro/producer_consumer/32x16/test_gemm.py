@@ -14,8 +14,8 @@ args = parser.parse_args()
 
 # Inputs
 M = 192*40    
-N = 8192    
-K = 8192    
+N = 192*40       
+K = 192*40       
 # A = torch.randn(N, N, dtype=torch.bfloat16, device='cuda') / 10.0  
 # B = torch.randn(N, N, dtype=torch.bfloat16, device='cuda') / 10.0  
 # Bt = B.t().contiguous()  # Transpose B for the kernel
@@ -125,8 +125,8 @@ error_count = (diff > 0.1).sum().item()
 print(f"Reference: {C_ref_float[-3:, -8:]}")
 print(f"Kernel: {C_float[-3:, -8:]}")
 
-# print(f"Reference: {C_ref_float[:3, :4]}")
-# print(f"Kernel: {C_float[:3, :4]}")
+print(f"Reference: {C_ref_float[:3, :4]}")
+print(f"Kernel: {C_float[:3, :4]}")
 
 print(f"Max error between kernel and reference: {max_error}")
 print(f"Max error: {max_error}")

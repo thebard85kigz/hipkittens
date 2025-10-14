@@ -109,7 +109,7 @@ void micro_tk(const micro_globals g) {
             G::load<2, false>(Bs[n1][n][1], g.b, {0, 0, col*2 + 2*n + 1, 1}, swizzled_offsets_B);
         }
 
-        asm volatile("s_waitcnt vmcnt(2)");
+        asm volatile("s_waitcnt vmcnt(0)");
     }
     __syncthreads();
 

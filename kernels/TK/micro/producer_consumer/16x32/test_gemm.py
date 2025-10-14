@@ -26,7 +26,7 @@ print(f"{num_blocks_x=} mod 32 {num_blocks_x % 32}, {num_blocks_y=} mod 32 {num_
 
 if args.profile:
     num_warmup = 1000
-    num_iters = 100
+    num_iters = 300
 else:
     num_warmup = 0
     num_iters = 1
@@ -122,15 +122,16 @@ max_error = diff.max().item()
 mean_error = diff.mean().item()
 error_count = (diff > 0.1).sum().item()
 
-print(f"Reference: {C_ref_float[-3:, -8:]}")
-print(f"Kernel: {C_float[-3:, -8:]}")
+# breakpoint()
 
-# print(f"Reference: {C_ref_float[:3, :4]}")
-# print(f"Kernel: {C_float[:3, :4]}")
+print(f"Reference: {C_ref_float[:3, :4]}")
+print(f"Kernel: {C_float[:3, :4]}")
 
 print(f"Max error between kernel and reference: {max_error}")
 print(f"Max error: {max_error}")
 print(f"Mean error: {mean_error}")
 print(f"Number of large errors (>0.1): {error_count} out of {M*N} ({error_count / (M*N) * 100:.2f}%)\n")
+
+print(f"diff[0,:128] = {diff[0,:128].max().item()}")
 
 # breakpoint()

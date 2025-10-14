@@ -33,7 +33,7 @@ struct micro_globals {
     size_t dynamic_shared_memory() { return MAX_SHARED_MEMORY; } 
 };
 
-__global__ __launch_bounds__(NUM_THREADS, 2)
+__global__ __launch_bounds__(NUM_THREADS, 1)
 void micro_tk(const micro_globals g) {
 
     // shared memory
@@ -74,8 +74,8 @@ void micro_tk(const micro_globals g) {
     bool is_consumer = (warp_group_id > 0 && warp_group_id <= M_BLOCK);
     int consumer_idx = is_consumer ? warp_group_id - 1 : 0;
 
-    using T = typename st_bf<BLOCK_SIZE, BLOCK_SIZE, st_32x32_s>::dtype;
-    constexpr int bytes_per_thread = st_32x32_s::template bytes_per_thread<T>();
+    using T = typename st_bf<BLOCK_SIZE, BLOCK_SIZE, st_16x32_s>::dtype;
+    constexpr int bytes_per_thread = st_16x32_s::template bytes_per_thread<T>();
     constexpr int bytes_per_memcpy = bytes_per_thread * NUM_PRODUCER_THREADS;
     constexpr int memcpy_per_tile = BLOCK_SIZE * BLOCK_SIZE * sizeof(T) / bytes_per_memcpy;
     uint32_t swizzled_offsets_A[memcpy_per_tile];
@@ -122,11 +122,10 @@ void micro_tk(const micro_globals g) {
                 G::load<2, false>(Bs[toc][n][0], g.b, {0, 0, col*2 + 2*n + 0, tile + 1}, swizzled_offsets_B);
                 G::load<2, false>(Bs[toc][n][1], g.b, {0, 0, col*2 + 2*n + 1, tile + 1}, swizzled_offsets_B);
             }
-            __builtin_amdgcn_s_waitcnt(0);
+            asm volatile("s_waitcnt vmcnt(4)");
         } else if (is_consumer) {
             A_slice a0;
-            B_slice b0, b1;
-
+            B_slice b0;
             auto st_subtile_b = subtile_inplace<HALF_BLOCK_SIZE, BLOCK_SIZE>(Bs[tic][local_warp_id][0], {0, 0});
             load(b0, st_subtile_b);
             auto st_subtile_a = subtile_inplace<HALF_BLOCK_SIZE, BLOCK_SIZE>(As[tic][consumer_idx][0], {0, 0});
@@ -136,6 +135,7 @@ void micro_tk(const micro_globals g) {
             mma_ABt(C_accum[0][0], a0, b0, C_accum[0][0]);
             __builtin_amdgcn_s_setprio(0);
 
+            B_slice b1;
             st_subtile_b = subtile_inplace<HALF_BLOCK_SIZE, BLOCK_SIZE>(Bs[tic][local_warp_id][1], {0, 0});
             load(b1, st_subtile_b);
             asm volatile("s_waitcnt lgkmcnt(0)");
