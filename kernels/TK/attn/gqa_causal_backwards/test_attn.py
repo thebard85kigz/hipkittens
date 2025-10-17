@@ -27,8 +27,8 @@ torch.cuda.set_device(5)
 # Benchmarking
 # **************************************************
 
-num_warmup = 5
-num_iters = 50
+num_warmup = 100
+num_iters = 500
 start_event = torch.cuda.Event(enable_timing=True) # in milliseconds
 end_event = torch.cuda.Event(enable_timing=True)
 
@@ -136,7 +136,7 @@ b = 16
 h_q = 16  # number of query heads  
 h_kv = 16  # number of key/value heads (for GQA)
 group_size = h_q // h_kv  # queries per KV head group
-n = 1024
+n = 8192
 d = 128
 dtype = torch.bfloat16
 mean = 10
