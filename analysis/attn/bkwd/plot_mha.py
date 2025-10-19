@@ -149,72 +149,162 @@ mi350x_baselines_non_causal = {
 
 
 
-colors = ["#8E69B8", "#E59952", "#68AC5A", "#7CB9BC"]
+colors = ["#8E69B8", "#E59952", "#68AC5A", "#7CB9BC", "#DE836B"]
 
-for device in ['mi350x']:
 
-    # Read data
-    try:
-        with open(f'{device}_data_to_log.json', 'r') as f:
-            data = json.load(f)
-    except Exception as e:
-        print(f"Error loading {device}_data_to_log.json: {e}")
-        continue
+def process_data(data_list):
+    """Separate numeric values and OOM indices"""
+    values = []
+    oom_indices = []
+    for i, val in enumerate(data_list):
+        if val == "OOM":
+            values.append(0)  # Use 0 for bar height
+            oom_indices.append(i)
+        else:
+            values.append(val)
+    return values, oom_indices
 
-    # Extract MHA_bkwd_asm_interleaved data
-    mha_data = {}
-    for key, value in data.items():
-        if key.startswith('MHA_bkwd_asm_interleaved_'):
-            n_value = value['N']
-            mha_data[n_value] = {
-                'tflops_tk': value['tflops_tk'],
-                'tflops_ref': value['tflops_ref']
-            }
 
-    # Sort by N value
-    n_values = sorted(mha_data.keys())
-    tk_tflops = [mha_data[n]['tflops_tk'] for n in n_values]
-    ref_tflops = [mha_data[n]['tflops_ref'] for n in n_values]
+for device in ['mi350x', 'mi355x']:
 
-    # Create grouped bar chart
-    x = np.arange(len(n_values))
-    width = 0.3
+    # Get baseline data
+    if device == 'mi355x':
+        baselines_causal = mi355x_baselines_causal
+        baselines_non_causal = mi355x_baselines_non_causal
+    else:  # mi350x
+        baselines_causal = mi350x_baselines_causal
+        baselines_non_causal = mi350x_baselines_non_causal
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    bars1 = ax.bar(x - width, ref_tflops, width, label='AITER (AMD)', color=colors[1])
-    bars2 = ax.bar(x, tk_tflops, width, label='HipKittens', color=colors[3])
+    # For MHA backward, we have both causal and non-causal data
+    # Create separate plots for each setting
+    for setting in ['causal', 'non_causal']:
+        if setting == 'causal':
+            baselines = baselines_causal
+            title_suffix = 'Causal'
+        else:
+            baselines = baselines_non_causal
+            title_suffix = 'Non-Causal'
 
-    max_tflops = max(max(tk_tflops), max(ref_tflops))
+        # Get sequence lengths from the baseline data
+        n_values = sorted([int(n) for n in baselines['torch'].keys()])
 
-    # Add value labels on bars
-    for bar, value in zip(bars1, ref_tflops):
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2., height + max_tflops * 0.01,
-                f'{value:.0f}', ha='center', va='bottom', fontsize=14)
+        # Extract baseline data for these sequence lengths
+        torch_tflops = [baselines['torch'][str(n)] for n in n_values]
+        ck_tflops = [baselines['ck'][str(n)] for n in n_values]
+        aiter_tflops = [baselines['aiter'][str(n)] for n in n_values]
+        tk_tflops = [baselines['hk'][str(n)] for n in n_values]
 
-    for bar, value in zip(bars2, tk_tflops):
-        height = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2., height + max_tflops * 0.01,
-                f'{value:.0f}', ha='center', va='bottom', fontsize=14)
+        # Triton is only available for causal
+        if setting == 'causal' and 'triton' in baselines:
+            triton_tflops = [baselines['triton'][str(n)] for n in n_values]
+        else:
+            triton_tflops = []
 
-    # add some padding to the top of the y-axis to prevent label overlap
-    ax.set_ylim(0, max_tflops * 1.15)
-    ax.set_xlabel('Sequence Length (N)', fontsize=16)
-    ax.set_ylabel('Performance (TFLOPS)', fontsize=16)
-    ax.set_title(f'MHA Backwards Performance Comparison {device.upper()}', fontsize=16)
-    ax.set_xticks(x)
-    ax.set_xticklabels([str(n) for n in n_values], fontsize=16)
-    ax.tick_params(axis='y', labelsize=16)
-    ax.legend(fontsize=16)
+        # Process data to separate OOM values
+        torch_vals, torch_oom = process_data(torch_tflops)
+        ck_vals, ck_oom = process_data(ck_tflops)
+        if triton_tflops:
+            triton_vals, triton_oom = process_data(triton_tflops)
+        else:
+            triton_vals, triton_oom = [], []
 
-    plt.tight_layout()
-    plt.show()
+        # Calculate max for numeric values only
+        numeric_vals = aiter_tflops + tk_tflops
+        numeric_vals.extend([v for v in torch_vals if v != 0])
+        numeric_vals.extend([v for v in ck_vals if v != 0])
+        if triton_vals:
+            numeric_vals.extend([v for v in triton_vals if v != 0])
+        max_tflops = max(numeric_vals) if numeric_vals else 100
 
-    output_file = f'{device}_mha_bkwd_plot.png'
-    plt.savefig(output_file, dpi=300, bbox_inches='tight')
-    print(f"Plot saved to {output_file}")
+        # Create bar chart
+        x = np.arange(len(n_values))
+        width = 0.17
 
-    # Print summary
-    print(f"Sequence lengths tested: {n_values}")
-    print(f"AITER (ASM) TFLOPS: {[f'{t:.2f}' for t in ref_tflops]}")
-    print(f"HipKittens TFLOPS: {[f'{t:.2f}' for t in tk_tflops]}")
+        fig, ax = plt.subplots(figsize=(16, 6))
+
+        if triton_tflops:
+            # 5 bars: PyTorch, Triton, CK, AITER, HipKittens
+            first_bar_start = x - 2*width
+            second_bar_start = x - width
+            third_bar_start = x
+            fourth_bar_start = x + width
+            fifth_bar_start = x + 2*width
+
+            bars1 = ax.bar(first_bar_start, torch_vals, width, label='PyTorch SDPA', color=colors[4])
+            bars2 = ax.bar(second_bar_start, triton_vals, width, label='Triton', color=colors[2])
+            bars3 = ax.bar(third_bar_start, ck_vals, width, label='Composable Kernel', color=colors[1])
+            bars4 = ax.bar(fourth_bar_start, aiter_tflops, width, label='AITER', color=colors[0])
+            bars5 = ax.bar(fifth_bar_start, tk_tflops, width, label='HipKittens', color=colors[3])
+        else:
+            # 4 bars: PyTorch, CK, AITER, HipKittens
+            first_bar_start = x - 1.5*width
+            second_bar_start = x - 0.5*width
+            third_bar_start = x + 0.5*width
+            fourth_bar_start = x + 1.5*width
+
+            bars1 = ax.bar(first_bar_start, torch_vals, width, label='PyTorch SDPA', color=colors[4])
+            bars3 = ax.bar(second_bar_start, ck_vals, width, label='Composable Kernel', color=colors[1])
+            bars4 = ax.bar(third_bar_start, aiter_tflops, width, label='AITER', color=colors[0])
+            bars5 = ax.bar(fourth_bar_start, tk_tflops, width, label='HipKittens', color=colors[3])
+
+        # Plot X markers for OOM
+        oom_height = 50  # Position X near top of chart
+        if torch_oom:
+            for idx in torch_oom:
+                offset = -2*width if triton_tflops else -1.5*width
+                ax.plot(x[idx] + offset, oom_height, 'x', color=colors[4],
+                       markersize=15, markeredgewidth=3)
+                ax.text(x[idx] + offset, oom_height + max_tflops * 0.03,
+                       'OOM', ha='center', va='bottom', fontsize=10, color=colors[4])
+
+        # Add value labels on bars
+        for i, (bar, value) in enumerate(zip(bars1, torch_vals)):
+            if value > 0:  # Only label non-OOM bars
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height + max_tflops * 0.01,
+                        f'{value:.0f}', ha='center', va='bottom', fontsize=14)
+
+        if triton_tflops:
+            for bar, value in zip(bars2, triton_vals):
+                if value > 0:  # Only label non-OOM bars
+                    height = bar.get_height()
+                    ax.text(bar.get_x() + bar.get_width()/2., height + max_tflops * 0.01,
+                            f'{value:.0f}', ha='center', va='bottom', fontsize=14)
+
+        for bar, value in zip(bars3, ck_vals):
+            if value > 0:  # Only label non-OOM bars
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height + max_tflops * 0.01,
+                        f'{value:.0f}', ha='center', va='bottom', fontsize=14)
+
+        for bar, value in zip(bars4, aiter_tflops):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height + max_tflops * 0.01,
+                    f'{value:.0f}', ha='center', va='bottom', fontsize=14)
+
+        for bar, value in zip(bars5, tk_tflops):
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height + max_tflops * 0.01,
+                    f'{value:.0f}', ha='center', va='bottom', fontsize=14)
+
+        # add some padding to the top of the y-axis to prevent label overlap
+        ax.set_ylim(0, max_tflops * 1.15)
+        ax.set_xlabel('Sequence Length (N)', fontsize=16)
+        ax.set_ylabel('Performance (TFLOPS)', fontsize=16)
+        ax.set_title(f'MHA {title_suffix} Backward Performance Comparison {device.upper()}', fontsize=16)
+        ax.set_xticks(x)
+        ax.set_xticklabels([str(n) for n in n_values], fontsize=16)
+        ax.tick_params(axis='y', labelsize=16)
+        ax.legend(fontsize=16)
+
+        plt.tight_layout()
+        plt.show()
+
+        output_file = f'{device}_mha_{setting}_bkwd_plot.png'
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        print(f"Plot saved to {output_file}")
+
+        # Print summary
+        print(f"Sequence lengths tested: {n_values}")
+        print(f"AITER TFLOPS: {[f'{t:.2f}' for t in aiter_tflops]}")
+        print(f"HipKittens TFLOPS: {[f'{t:.2f}' for t in tk_tflops]}")
