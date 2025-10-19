@@ -1,0 +1,32 @@
+{
+    "1024": {
+        "avg_time_hipblaslt": 9.51,
+        "tflops_hipblaslt": 225813,
+        "avg_time": 0.016,
+        "tflops": 132.94
+    },
+    "2048": {
+        "avg_time_hipblaslt": 16.33,
+        "tflops_hipblaslt": 1.05204e+06,
+        "avg_time": 0.025,
+        "tflops": 694.34
+    },
+    "4096": {
+        "avg_time_hipblaslt": 0.04938,
+        "tflops_hipblaslt": 2783.29,
+        "avg_time": 0.049,
+        "tflops": 2783.06
+    },
+    "8192": {
+        "avg_time_hipblaslt": 0.33483,
+        "tflops_hipblaslt": 3283.79,
+        "avg_time": 0.332,
+        "tflops": 3312.95
+    },
+    "16384": {
+        "avg_time_hipblaslt": 3.70616,
+        "tflops_hipblaslt": 2373.37,
+        "avg_time": 2.638,
+        "tflops": 3334.62
+    }
+}

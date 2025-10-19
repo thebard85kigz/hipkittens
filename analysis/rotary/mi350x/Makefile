@@ -1,8 +1,8 @@
 # Compiler
 GPU_TARGET=CDNA4
 
-TARGET ?= tk_kernel
-SRC ?= gqa_kernel_1024.cpp
+TARGET=tk_kernel
+SRC=kernel_1024.cpp
 
 # HIP variables
 ROCM_INSTALL_DIR := $(ROCM_PATH)
@@ -16,8 +16,14 @@ HIPFLAGS+= -DKITTENS_CDNA2 --offload-arch=gfx90a
 else ifeq ($(GPU_TARGET),CDNA3)
 HIPFLAGS+= -DKITTENS_CDNA3 --offload-arch=gfx942
 else ifeq ($(GPU_TARGET),CDNA4)
-HIPFLAGS+= -DKITTENS_CDNA4 --offload-arch=gfx950 -DHIP_ENABLE_WARP_SYNC_BUILTINS -ffast-math 
+HIPFLAGS+= -DKITTENS_CDNA4 --offload-arch=gfx950 -DHIP_ENABLE_WARP_SYNC_BUILTINS
 endif
+
+# Be conservative while debugging; prevent some aggressive folding/aliasing
+HIPFLAGS += -O3 -fno-builtin -fno-strict-aliasing
+# while debugging, avoid fast-math folding away numerics
+HIPFLAGS := $(filter-out -ffast-math,$(HIPFLAGS))
+
 
 # Common variables and flags
 CXX_STD   := c++20
@@ -36,7 +42,7 @@ ILDLIBS   += $(LDLIBS)
 
 PY_LDFLAGS := $(shell python3-config --ldflags | sed 's/-lcrypt//g')
 ICXXFLAGS += $(PY_LDFLAGS)
-ICXXFLAGS+= -I${THUNDERKITTENS_ROOT}/include -I${THUNDERKITTENS_ROOT}/prototype $(shell python3 -m pybind11 --includes) -shared -fPIC -Rpass-analysis=kernel-resource-usage
+ICXXFLAGS+= -I${THUNDERKITTENS_ROOT}/include -I${THUNDERKITTENS_ROOT}/prototype $(shell python3 -m pybind11 --includes) -shared -fPIC -Rpass-analysis=kernel-resource-usage 
 
 
 # Default target
