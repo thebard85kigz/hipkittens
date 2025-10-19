@@ -3,7 +3,9 @@
 
 This README describes the baseline kernels we use from third party libraries at the time of this work (October 2025). We benchmarked all kernels using 500 warmup and 100 repeat iterations. 
 
-### Setting up composable kernel
+### Composable kernel
+
+**Attention**
 
 Baselines were collected using this process:
 ```bash
@@ -80,18 +82,59 @@ Backwards:
 ./bin/tile_example_fmha_bwd -prec=bf16 -b=16 -h=64 -h_k=8 -d=128 -s=16384 -mask=1 -warmup=500 -repeat=100 -kname=1
 ```
 
+**GEMM**
+
+From within ghte ```composable_kernel/build/``` directory run:
+```bash
+ninja tile_example_gemm_basic
+ninja tile_example_gemm_universal
+ninja tile_example_streamk_gemm_basic
+````
+
+```bash 
+# https://github.com/ROCm/composable_kernel/tree/develop/example/ck_tile/40_streamk_gemm 
+./bin/tile_example_streamk_gemm_basic -prec=bf16 -m=1024 -n=1024 -k=1024 -warmup=500 -repeat=100 -v=1 
+./bin/tile_example_streamk_gemm_basic -prec=bf16 -m=2048 -n=2048 -k=2048 -warmup=500 -repeat=100 -v=1 
+./bin/tile_example_streamk_gemm_basic -prec=bf16 -m=4096 -n=4096 -k=4096 -warmup=500 -repeat=100 -v=1 
+./bin/tile_example_streamk_gemm_basic -prec=bf16 -m=8192 -n=8192 -k=8192 -warmup=500 -repeat=100 -v=1 
+./bin/tile_example_streamk_gemm_basic -prec=bf16 -m=16384 -n=16384 -k=16384 -warmup=500 -repeat=100 -v=1 
+
+# https://github.com/ROCm/composable_kernel/tree/develop/example/ck_tile/03_gemm
+./bin/tile_example_gemm_basic -prec=bf16 -m=1024 -n=1024 -k=1024 -warmup=500 -repeat=100 -v=1 
+./bin/tile_example_gemm_basic -prec=bf16 -m=2048 -n=2048 -k=2048 -warmup=500 -repeat=100 -v=1
+./bin/tile_example_gemm_basic -prec=bf16 -m=4096 -n=4096 -k=4096 -warmup=500 -repeat=100 -v=1
+./bin/tile_example_gemm_basic -prec=bf16 -m=8192 -n=8192 -k=8192 -warmup=500 -repeat=100 -v=1
+./bin/tile_example_gemm_basic -prec=bf16 -m=16384 -n=16384 -k=16384 -warmup=500 -repeat=100 -v=1
+
+./bin/tile_example_gemm_universal -prec=bf16 -m=1024 -n=1024 -k=1024 -warmup=500 -repeat=100 -v=1
+./bin/tile_example_gemm_universal -prec=bf16 -m=2048 -n=2048 -k=2048 -warmup=500 -repeat=100 -v=1
+./bin/tile_example_gemm_universal -prec=bf16 -m=4096 -n=4096 -k=4096 -warmup=500 -repeat=100 -v=1
+./bin/tile_example_gemm_universal -prec=bf16 -m=8192 -n=8192 -k=8192 -warmup=500 -repeat=100 -v=1
+./bin/tile_example_gemm_universal -prec=bf16 -m=16384 -n=16384 -k=16384 -warmup=500 -repeat=100 -v=1
+```
+
+
 ### Triton baselines
+
+**Attention**
 
 Attention baselines for triton are taken as the best performance out of:
 - [ROCm triton perf-kernels](https://github.com/ROCm/triton/tree/76076e1d7d16a988a61a66264845990acd1244ab/python/perf-kernels) ```flash-attention.py```
 - [ROCm triton tutorials](https://github.com/ROCm/triton/tree/76076e1d7d16a988a61a66264845990acd1244ab/python/tutorials) ```06-fused-attention.py```
-
-We can directly run the files using python. 
-
+We can directly run the files using python. Find these files under ```baselines/attn/triton_attention_v01.py``` and ```baselines/attn/triton_attention_v02.py```.
 
 ### HipblasLT baselines
 
+**GEMM**
 
+BF16 GEMM:
+```bash
+hipblaslt-bench --batch_count 1 --a_type bf16_r --b_type bf16_r --c_type f32_r --d_type f32_r --rotating 512 --iters 100 --cold_iters 500 -m 1024 -n 1024 -k 1024
+hipblaslt-bench --batch_count 1 --a_type bf16_r --b_type bf16_r --c_type f32_r --d_type f32_r --rotating 512 --iters 100 --cold_iters 500 -m 2048 -n 2048 -k 2048
+hipblaslt-bench --batch_count 1 --a_type bf16_r --b_type bf16_r --c_type f32_r --d_type f32_r --rotating 512 --iters 100 --cold_iters 500 -m 4096 -n 4096 -k 4096
+hipblaslt-bench --batch_count 1 --a_type bf16_r --b_type bf16_r --c_type f32_r --d_type f32_r --rotating 512 --iters 100 --cold_iters 500 -m 8192 -n 8192 -k 8192
+hipblaslt-bench --batch_count 1 --a_type bf16_r --b_type bf16_r --c_type f32_r --d_type f32_r --rotating 512 --iters 100 --cold_iters 500 -m 16384 -n 16384 -k 16384
+```
 
 
 
