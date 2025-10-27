@@ -22,8 +22,8 @@ residual = torch.randn((B, N, D), dtype=torch.bfloat16, device='cuda').requires_
 
 filename = sys.argv[2]
 
-num_warmup = 100
-num_iters = 500
+num_warmup = 500
+num_iters = 100
 
 start_event = torch.cuda.Event(enable_timing=True) # in milliseconds
 end_event = torch.cuda.Event(enable_timing=True)
