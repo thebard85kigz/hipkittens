@@ -3,8 +3,13 @@ import tk_kernel
 import random
 import time
 import math
+import sys
+import os
 from torch.nn.functional import scaled_dot_product_attention
 import aiter
+
+torch.manual_seed(0)
+random.seed(0)
 
 torch.set_printoptions(
     precision=3,        # decimals
@@ -13,16 +18,19 @@ torch.set_printoptions(
     threshold=float("inf")  # print every element, no summarising "..."
 )
 
-torch.cuda.set_device(6)
-
 # Inputs
-B = 16
-H = 16
-H_KV = 16
-N = 8192
+B = int(sys.argv[1]) if len(sys.argv) > 1 else 16
 D = 128
-causal = False
+H = int(sys.argv[3]) if len(sys.argv) > 3 else 64
+H_KV = int(sys.argv[4]) if len(sys.argv) > 4 else 8
+N = int(sys.argv[2]) if len(sys.argv) > 2 else 1024
+causal = int(sys.argv[5]) if len(sys.argv) > 5 else 0
 dtype = torch.bfloat16
+
+q = torch.randn(B, N, H, D, dtype=dtype, device='cuda', requires_grad=True)
+k = torch.randn(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True)
+v = torch.randn(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True)
+
 
 def flops(batch, seqlen, nheads, headdim, causal, mode="fwd"):
     """Calculate FLOPs for attention operation."""
@@ -56,7 +64,8 @@ start_event = torch.cuda.Event(enable_timing=True) # in milliseconds
 end_event = torch.cuda.Event(enable_timing=True)
 flops_ref = flops(B, N, H, D, causal)
 
-# Reference matmul using AITER
+
+print("AITER:")
 for _ in range(num_warmup):
     q = torch.randn(B, N, H, D, dtype=dtype, device='cuda', requires_grad=True)
     k = torch.randn(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True)
@@ -82,14 +91,14 @@ eff_ref = efficiency(flops_ref, avg_time_ref)
 print(f"AITER (AMD) reference average execution time: {avg_time_ref:.4f} ms")
 print(f"AITER (AMD) reference performance: {eff_ref:.2f} TFLOPS for {B=} {H=} {N=} {D=} {causal=}.\n")
 
-# Kernel matmul
+ 
+print("Hipkittens:")
 for _ in range(num_warmup):
     out = torch.zeros(B, N, H, D, dtype=dtype, device='cuda', requires_grad=True)
     lse = torch.zeros(B, H, 1, N, dtype=torch.float32, device='cuda', requires_grad=True)
     q = torch.randn(B, N, H, D, dtype=dtype, device='cuda', requires_grad=True)
-    k = torch.randn(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True) 
+    k = torch.randn(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True)
     v = torch.randn(B, N, H_KV, D, dtype=dtype, device='cuda', requires_grad=True)
-    torch.cuda.synchronize()
     tk_kernel.dispatch_micro(q, k, v, out, lse)
 timings = []
 out = torch.zeros(B, N, H, D, dtype=dtype, device='cuda', requires_grad=True)
@@ -117,19 +126,19 @@ print(f"Performance: {eff:.2f} TFLOPS for {N}x{N} matrix multiplication.\n")
 num_print = 16
 print(f"\n TK vs AITER comparison:")
 print("\nO outputs:")
-print("TK: ", out[0, 0, 0, :num_print], "Max:", out.max().item())
-print("AITER: ", out_ref[0, 0, 0, :num_print], "Max:", out_ref.max().item())
-
+print("TK: ", out[0, 0, :num_print, 0], "Max:", out.max().item())
+print("AITER: ", out_ref[0, 0, :num_print, 0], "Max:", out_ref.max().item())
 print("\nLSE outputs:")
 print("TK: ", lse[0, 0, 0, :num_print], "Max:", lse.max().item())
 print("AITER: ", lse_ref[0, 0, :num_print], "Max:", lse_ref.max().item())
-
 print("Robustness check:")
 o_diff, o_err_cnt, o_total, o_rel_error, o_l2_error, o_cos, o_mask = robustness_check(out, out_ref)
 print(f"O: max_abs={o_diff.max().item():.6f}, max_rel={o_rel_error:.4f}, "
-      f"rel_l2={o_l2_error:.4f}, cos={o_cos:.6f}, "
-      f"errors={o_err_cnt}/{o_total} ({100*o_err_cnt/o_total:.4f}%)")
+    f"rel_l2={o_l2_error:.4f}, cos={o_cos:.6f}, "
+    f"errors={o_err_cnt}/{o_total} ({100*o_err_cnt/o_total:.4f}%)")
 l_diff, l_err_cnt, l_total, l_rel_error, l_l2_error, l_cos, l_mask = robustness_check(lse, lse_ref.unsqueeze(-1).transpose(-1, -2))
 print(f"LSE: max_abs={l_diff.max().item():.6f}, max_rel={l_rel_error:.4f}, "
-      f"rel_l2={l_l2_error:.4f}, cos={l_cos:.6f}, "
-      f"errors={l_err_cnt}/{l_total} ({100*l_err_cnt/l_total:.4f}%)")
+    f"rel_l2={l_l2_error:.4f}, cos={l_cos:.6f}, "
+    f"errors={l_err_cnt}/{l_total} ({100*l_err_cnt/l_total:.4f}%)")
+
+    

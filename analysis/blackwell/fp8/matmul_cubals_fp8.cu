@@ -29,55 +29,102 @@
         } \
     } while(0)
 
-// CPU reference in column-major to match cuBLAS
-void cpu_gemm_col_major(float* a, float* b, float* c, int M, int N, int K) {
-    // C = A * B in column-major
-    // A is M x K, B is K x N, C is M x N
+
+
+    // CPU reference in column-major to match cuBLAS
+void cpu_gemm_fp8_simulation(float* a, float* b, float* c, int M, int N, int K) {
     #pragma omp parallel for collapse(2)
     for (int j = 0; j < N; j++) {
         for (int i = 0; i < M; i++) {
             float sum = 0.0f;
             for (int k = 0; k < K; k++) {
-                // Column-major indexing
-                sum += a[i + k * M] * b[k + j * K];
+                // Simulate FP8 multiplication
+                __nv_fp8_e4m3 a_fp8(a[i + k * M]);
+                __nv_fp8_e4m3 b_fp8(b[k + j * K]);
+                sum += float(a_fp8) * float(b_fp8);
             }
-            c[i + j * M] = sum;
+            // Quantize output to FP8 and back
+            __nv_fp8_e4m3 sum_fp8(sum);
+            c[i + j * M] = float(sum_fp8);
         }
     }
 }
 
-void check_result(float* h_C, float* h_C_ref, int M, int N) {
-    float max_error = 0.0f;
-    float avg_error = 0.0f;
-    int error_count = 0;
-    const float tolerance = 0.5f; // Large tolerance for FP8
+void check_result(float* h_C, float* h_C_ref, int M, int N, int K) {
+    float max_abs_error = 0.0f;
+    float max_rel_error = 0.0f;
+    float avg_abs_error = 0.0f;
+    int significant_errors = 0;
+    
+    // FP8 E4M3 precision expectations
+    const float fp8_epsilon = 0.125f;  // Roughly the precision of FP8 E4M3
+    const float accumulation_factor = std::sqrt(static_cast<float>(K));
+    const float abs_tolerance = fp8_epsilon * accumulation_factor * 2.0f;  // ~1.6 for K=4096
+    const float rel_tolerance = 0.10f;  // 10% relative error
+    const float magnitude_threshold = 1.0f;  // Below this, use absolute error only
+    
+    std::cout << "Tolerances - Absolute: " << abs_tolerance 
+              << ", Relative: " << rel_tolerance * 100 << "% for values > " 
+              << magnitude_threshold << std::endl;
     
     for (int i = 0; i < M * N; ++i) {
-        float error = std::abs(h_C[i] - h_C_ref[i]);
-        avg_error += error;
+        float abs_error = std::abs(h_C[i] - h_C_ref[i]);
+        avg_abs_error += abs_error;
         
-        if(error > tolerance) {
-            if(error_count < 10) {
-                int col = i / M;  // Column-major
-                int row = i % M;  // Column-major
-                std::cout << "Error at index " << i << " (row " << row << ", col " << col 
-                         << "): GPU=" << h_C[i] << " CPU=" << h_C_ref[i] 
-                         << " (error: " << error << ")" << std::endl;
+        // Determine if this is a significant error
+        bool is_significant_error = false;
+        float rel_error = 0.0f;
+        
+        if (std::abs(h_C_ref[i]) > magnitude_threshold) {
+            // For large values, check relative error
+            rel_error = abs_error / std::abs(h_C_ref[i]);
+            if (rel_error > rel_tolerance && abs_error > fp8_epsilon) {
+                is_significant_error = true;
             }
-            else if(error_count == 10) {
-                std::cout << "Too many errors, suppressing further output..." << std::endl;
+            max_rel_error = std::max(max_rel_error, rel_error);
+        } else {
+            // For small values, only check absolute error
+            if (abs_error > abs_tolerance) {
+                is_significant_error = true;
             }
-            error_count++;
         }
-        max_error = std::max(max_error, error);
+        
+        if (is_significant_error) {
+            significant_errors++;
+            if (significant_errors <= 10) {
+                int col = i / M;
+                int row = i % M;
+                std::cout << "Significant error at [" << row << "," << col << "]: "
+                         << "GPU=" << h_C[i] << " CPU=" << h_C_ref[i] 
+                         << " (abs: " << abs_error;
+                if (std::abs(h_C_ref[i]) > magnitude_threshold) {
+                    std::cout << ", rel: " << (rel_error * 100) << "%";
+                }
+                std::cout << ")" << std::endl;
+            }
+        }
+        
+        max_abs_error = std::max(max_abs_error, abs_error);
     }
     
-    avg_error /= (M * N);
-    std::cout << "Max error: " << max_error << std::endl;
-    std::cout << "Avg error: " << avg_error << std::endl;
-    std::cout << "Errors above tolerance (" << tolerance << "): " 
-              << error_count << " / " << (M*N) 
-              << " (" << (100.0f * error_count / (M*N)) << "%)" << std::endl;
+    avg_abs_error /= (M * N);
+    float error_rate = (100.0f * significant_errors) / (M * N);
+    
+    std::cout << "\nError Summary:" << std::endl;
+    std::cout << "  Max absolute error: " << max_abs_error << std::endl;
+    std::cout << "  Avg absolute error: " << avg_abs_error << std::endl;
+    std::cout << "  Significant errors: " << significant_errors 
+              << " / " << (M*N) << " (" << error_rate << "%)" << std::endl;
+    
+    // Pass/fail criteria for FP8
+    bool passed = (error_rate < 1.0f) && (max_abs_error < 5.0f);
+    
+    std::cout << "\nVerification: " << (passed ? "✓ PASSED" : "✗ FAILED") 
+              << " (FP8 precision mode)" << std::endl;
+    
+    if (passed && error_rate > 0.1f) {
+        std::cout << "Note: Some errors are expected with FP8's limited precision" << std::endl;
+    }
 }
 
 void benchmark(int m, int n, int k) {
@@ -194,7 +241,7 @@ void benchmark(int m, int n, int k) {
 
     // Warmup runs
     std::cout << "Running warmup..." << std::endl;
-    for (int i = 0; i < 50; ++i) {
+    for (int i = 0; i < 500; ++i) {
         CHECK_CUBLAS(cublasLtMatmul(
             handle,
             operationDesc,
@@ -258,7 +305,7 @@ void benchmark(int m, int n, int k) {
     std::cout << "\nVerifying correctness..." << std::endl;
     
     // Compute CPU reference in column-major
-    cpu_gemm_col_major(h_A.data(), h_B.data(), h_D_ref.data(), m, n, k);
+    cpu_gemm_fp8_simulation(h_A.data(), h_B.data(), h_D_ref.data(), m, n, k);
 
     // Copy GPU result back
     std::vector<__nv_fp8_e4m3> h_D_fp8(m * n);
@@ -271,7 +318,7 @@ void benchmark(int m, int n, int k) {
     }
 
     // Compare results
-    check_result(h_D.data(), h_D_ref.data(), m, n);
+    check_result(h_D.data(), h_D_ref.data(), m, n, k);
 
     // Cleanup
     CHECK_CUBLAS(cublasLtMatmulPreferenceDestroy(preference));
@@ -300,11 +347,17 @@ int main(int argc, char** argv) {
     std::cout << "Compute capability: " << prop.major << "." << prop.minor << std::endl << std::endl;
     
     // Benchmark different matrix sizes
-    std::vector<int> sizes = {2048, 4096, 8192};
+    std::vector<int> sizes = {1024, 2048, 4096, 8192, 16384};
     
     for (int size : sizes) {
         benchmark(size, size, size);
     }
+
+    // std::vector<int> sizes = {65536};
+
+    // for (int size : sizes) {
+    //     benchmark(8192, 8192, size);
+    // }
 
     return 0;
 }

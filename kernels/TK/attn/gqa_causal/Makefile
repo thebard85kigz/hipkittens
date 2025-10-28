@@ -1,8 +1,19 @@
 # Compiler
 GPU_TARGET=CDNA4
 
-TARGET=tk_fwd_causal_kernel
-SRC=kernel_02.cpp
+TARGET=tk_kernel
+SRC=kernel.cpp
+
+# parameters
+ATTN_B ?= 16
+ATTN_H ?= 64
+ATTN_H_KV ?= 8
+ATTN_N ?= 8192
+
+CPPFLAGS += -DATTN_B=$(ATTN_B)
+CPPFLAGS += -DATTN_H=$(ATTN_H)
+CPPFLAGS += -DATTN_H_KV=$(ATTN_H_KV)
+CPPFLAGS += -DATTN_N=$(ATTN_N)
 
 # HIP variables
 ROCM_INSTALL_DIR := $(ROCM_PATH)
@@ -36,7 +47,7 @@ ILDLIBS   += $(LDLIBS)
 
 PY_LDFLAGS := $(shell python3-config --ldflags | sed 's/-lcrypt//g')
 ICXXFLAGS += $(PY_LDFLAGS)
-ICXXFLAGS+= -I${THUNDERKITTENS_ROOT}/include -I${THUNDERKITTENS_ROOT}/prototype $(shell python3 -m pybind11 --includes) -shared -fPIC -Rpass-analysis=kernel-resource-usage --save-temps
+ICXXFLAGS+= -I${THUNDERKITTENS_ROOT}/include -I${THUNDERKITTENS_ROOT}/prototype $(shell python3 -m pybind11 --includes) -shared -fPIC -Rpass-analysis=kernel-resource-usage
 
 
 # Default target
