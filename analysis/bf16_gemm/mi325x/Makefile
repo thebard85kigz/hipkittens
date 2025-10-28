@@ -3,7 +3,7 @@ GPU_TARGET=CDNA3
 
 # Default values, can be overridden via command line
 TARGET ?= tk_kernel
-SRC ?= kernel.cpp
+SRC ?= kernel_1024.cpp
 
 # HIP variables
 ROCM_INSTALL_DIR := $(ROCM_PATH)
