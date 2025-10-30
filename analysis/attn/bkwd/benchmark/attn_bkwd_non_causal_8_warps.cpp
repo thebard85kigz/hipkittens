@@ -1,11 +1,24 @@
 #include "kittens.cuh"
 #include "pyutils/pyutils.cuh"
 
+#ifndef ATTN_B
 constexpr int ATTN_B = 16; // batch size
-constexpr int ATTN_H_Q = 64; // number of query heads
+#endif
+
+#ifndef ATTN_H
+constexpr int ATTN_H = 64; // number of query heads
+#endif
+
+#ifndef ATTN_H_KV
 constexpr int ATTN_H_KV = 8; // number of key/value heads (for GQA)
-constexpr int GROUP_SIZE = ATTN_H_Q / ATTN_H_KV; // queries per KV head group
+#endif
+
+constexpr int GROUP_SIZE = ATTN_H / ATTN_H_KV; // queries per KV head group
+
+#ifndef ATTN_N
 constexpr int ATTN_N = 1024; // sequence length
+#endif
+
 constexpr int ATTN_D = 128; // dimension
 constexpr int STEP_QO = 64; // block size for QO
 constexpr int BLOCK_SIZE_KV = 256; // block size for KV
