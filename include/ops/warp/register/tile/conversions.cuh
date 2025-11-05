@@ -674,10 +674,10 @@ __device__ static inline void lower_fill(RT &dst, const RT &src, const int row_i
 * @note The subtile height must evenly divide the tile height.
 */
 template<int subtile_rows, ducks::rt::all RT>
-__device__ inline rt<typename RT::T, subtile_rows, RT::cols, typename RT::layout> &subtile_inplace(RT & src, int idx) {
+__device__ inline rt<typename RT::T, subtile_rows, RT::cols, typename RT::layout, typename RT::shape> &subtile_inplace(RT & src, int idx) {
     using T = typename RT::T;
     static_assert(RT::rows % (subtile_rows / RT::base_tile_rows) == 0, "subtile height should evenly divide tile height.");
-    return reinterpret_cast<rt<typename RT::T, subtile_rows, RT::cols, typename RT::layout>&>(
+    return reinterpret_cast<rt<typename RT::T, subtile_rows, RT::cols, typename RT::layout, typename RT::shape>&>(
         src.tiles[idx*(subtile_rows / RT::base_tile_rows)]
     );
 }

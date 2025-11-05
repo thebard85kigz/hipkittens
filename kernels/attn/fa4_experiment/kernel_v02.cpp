@@ -16,7 +16,7 @@ constexpr int ATTN_H_KV = 8; // number of heads for key and value
 constexpr int GROUP_SIZE = ATTN_H / ATTN_H_KV; // queries per KV head group
 
 #ifndef ATTN_N
-constexpr int ATTN_N = 1024; // sequence length
+constexpr int ATTN_N = 2048; // sequence length
 #endif
 
 constexpr int ATTN_D = 128; // dimension
@@ -251,12 +251,12 @@ __global__ void attend_ker(const attn_globals<D> g) {
         // Cluster 2:
         //      A0V0
         __builtin_amdgcn_s_setprio(1);
-        mma_AtB(o_reg, v_reg, att_block_bf16_in, o_reg);
+        mma_AtB(o_reg, subtile_inplace<16>(v_reg, 0), subtile_inplace<16>(att_block_bf16_in, 0), o_reg);
         //      Partial softmax for QK1
         col_max(max_vec, att_block[1], max_vec_prev);
         float max_scale_diff = get_max_diff(max_vec_prev, max_vec);
-        float delta = -max_scale_diff;
-        if (delta < RESCALE_THRESHOLD) {
+        sched_barrier_pairs<4, 5, 2>();
+        if (max_scale_diff < RESCALE_THRESHOLD) {
             copy(max_vec, max_vec_prev); 
         } else {
             sub(scale_vec, max_vec_prev, max_vec);
@@ -264,9 +264,12 @@ __global__ void attend_ker(const attn_globals<D> g) {
             exp2(scale_vec, scale_vec);
             mul_col(o_reg, o_reg, scale_vec);
         }
+        mma_AtB(o_reg, subtile_inplace<16>(v_reg, 1), subtile_inplace<16>(att_block_bf16_in, 1), o_reg);
+        mma_AtB(o_reg, subtile_inplace<16>(v_reg, 2), subtile_inplace<16>(att_block_bf16_in, 2), o_reg);
+        mma_AtB(o_reg, subtile_inplace<16>(v_reg, 3), subtile_inplace<16>(att_block_bf16_in, 3), o_reg);
         sub_col(att_block[1], att_block[1], max_vec);
         exp2(att_block[1].tiles[0][0], att_block[1].tiles[0][0]);
-        // sched_barrier_pairs<10, 5, 2>();
+        sched_barrier_pairs<6, 5, 2>();
         sched_barrier_exp_pairs<6, 3, 2>();
         __builtin_amdgcn_s_setprio(0);
         __builtin_amdgcn_sched_barrier(0);
@@ -315,12 +318,12 @@ __global__ void attend_ker(const attn_globals<D> g) {
         // Cluster 6:
         //      A1V1
         __builtin_amdgcn_s_setprio(1);
-        mma_AtB(o_reg, v_reg, att_block_bf16_in, o_reg);
+        mma_AtB(o_reg, subtile_inplace<16>(v_reg, 0), subtile_inplace<16>(att_block_bf16_in, 0), o_reg);
         //      Partial softmax for QK2
         col_max(max_vec, att_block[0], max_vec_prev);
         max_scale_diff = get_max_diff(max_vec_prev, max_vec);
-        delta = -max_scale_diff;
-        if (delta < RESCALE_THRESHOLD) {
+        sched_barrier_pairs<4, 5, 4>();
+        if (max_scale_diff < RESCALE_THRESHOLD) {
             copy(max_vec, max_vec_prev);  // Revert to old max
         } else {
             sub(scale_vec, max_vec_prev, max_vec);
@@ -328,9 +331,12 @@ __global__ void attend_ker(const attn_globals<D> g) {
             exp2(scale_vec, scale_vec);
             mul_col(o_reg, o_reg, scale_vec);
         }
+        mma_AtB(o_reg, subtile_inplace<16>(v_reg, 1), subtile_inplace<16>(att_block_bf16_in, 1), o_reg);
+        mma_AtB(o_reg, subtile_inplace<16>(v_reg, 2), subtile_inplace<16>(att_block_bf16_in, 2), o_reg);
+        mma_AtB(o_reg, subtile_inplace<16>(v_reg, 3), subtile_inplace<16>(att_block_bf16_in, 3), o_reg);
         sub_col(att_block[0], att_block[0], max_vec);
         exp2(att_block[0].tiles[0][0], att_block[0].tiles[0][0]);
-        sched_barrier_pairs<10, 5, 4>();
+        sched_barrier_pairs<6, 5, 4>();
         sched_barrier_exp_pairs<6, 3, 4>();
         __builtin_amdgcn_s_setprio(0);
         __builtin_amdgcn_sched_barrier(0);
