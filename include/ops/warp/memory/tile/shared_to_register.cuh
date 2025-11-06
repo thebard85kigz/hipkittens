@@ -749,8 +749,8 @@ __device__ inline static void store(ST &dst, const RT &src) {
 
     const int laneid = kittens::laneid();
 
-    const int row_offset = dst.base_tile_stride * (laneid / dst.base_tile_cols);
-    const int col_offset = laneid % dst.base_tile_cols;
+    const int row_offset = src.base_tile_stride * (laneid / src.base_tile_cols);
+    const int col_offset = laneid % src.base_tile_cols;
 
     const uint32_t dst_ptr = reinterpret_cast<uintptr_t>(&dst.data[0]);
 
@@ -762,7 +762,7 @@ __device__ inline static void store(ST &dst, const RT &src) {
         #pragma unroll
         for (int k = 0; k < RT::base_tile_num_strides; k++) {
             #pragma unroll
-            for (int l = 0; l < dst.base_tile_stride / packing; l++) {
+            for (int l = 0; l < src.base_tile_stride / packing; l++) {
                 #pragma unroll
                 for (int i = 0; i < register_subtiles_per_shared_subtile_col; i++) {
                     #pragma unroll
@@ -781,11 +781,11 @@ __device__ inline static void store(ST &dst, const RT &src) {
                         for (int ii = 0; ii < ST::subtiles_per_col; ii++) {
                             #pragma unroll
                             for (int jj = 0; jj < ST::subtiles_per_row; jj++) {
-                                constexpr int shared_subtile_id = ii * ST::underlying_subtiles_per_row + jj;
-                                constexpr int offset = shared_subtile_id * ST::underlying_subtile_bytes;
+                                const int shared_subtile_id = ii * ST::underlying_subtiles_per_row + jj;
+                                const int offset = shared_subtile_id * ST::underlying_subtile_bytes;
 
-                                constexpr int register_row = ii * register_subtiles_per_shared_subtile_col + i;
-                                constexpr int register_col = jj * register_subtiles_per_shared_subtile_row + j;
+                                const int register_row = ii * register_subtiles_per_shared_subtile_col + i;
+                                const int register_col = jj * register_subtiles_per_shared_subtile_row + j;
 
                                 U* dst_elem_ptr = (U*) (addr + offset);
                                 U* next_dst_elem_ptr = (U*) (next_addr + offset);
@@ -811,7 +811,7 @@ __device__ inline static void store(ST &dst, const RT &src) {
         for (int k = 0; k < RT::base_tile_num_strides; k++) {
 
             #pragma unroll
-            for (int l = 0; l < dst.base_tile_stride / packing; l++) {
+            for (int l = 0; l < src.base_tile_stride / packing; l++) {
 
                 const int row = (row_offset + k * RT::base_tile_elements_per_stride_group) % ST::underlying_subtile_rows + l * 2;
                 const int next_row = row + 1;
