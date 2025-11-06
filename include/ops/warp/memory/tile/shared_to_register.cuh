@@ -625,7 +625,9 @@ __device__ inline static void store(ST &dst, const RT &src) {
                     const int row = i * RT::base_tile_rows + row_offset;
                     const int col = j * RT::base_tile_cols + col_offset + k * RT::base_tile_elements_per_stride_group;
                     const uint32_t swizzled_offset = dst.swizzle({row, col});
+                    const uint32_t next_swizzled_offset = dst.swizzle({row, col + 4});
                     const uint32_t addr = dst_ptr + swizzled_offset;
+                    const uint32_t next_addr = dst_ptr + next_swizzled_offset;
 
                     const int idx = k * RT::base_tile_stride / packing;
 
@@ -643,10 +645,13 @@ __device__ inline static void store(ST &dst, const RT &src) {
                                 // Use ds_write_b128 for stride == 8, dtype == bf16
                                 if constexpr (RT::base_tile_stride == 8) {
                                     asm volatile(
-                                        "ds_write_b128 %0, %1 offset:%2\n"
+                                        "ds_write_b64 %0, %2 offset:%4\n"
+                                        "ds_write_b64 %1, %3 offset:%4\n"
                                         : 
-                                        : "v"(addr), 
+                                        : "v"(addr),
+                                          "v"(next_addr),
                                           "v"(*reinterpret_cast<const float2*>(&src.tiles[register_row][register_col].data[idx])),
+                                          "v"(*reinterpret_cast<const float2*>(&src.tiles[register_row][register_col].data[idx + 2])),
                                           "i"(offset)
                                     );
                                 // Use ds_write_b64 for stride == 4, dtype == bf16
@@ -752,8 +757,6 @@ __device__ inline static void store(ST &dst, const RT &src) {
     const int row_offset = src.base_tile_stride * (laneid / src.base_tile_cols);
     const int col_offset = laneid % src.base_tile_cols;
 
-    const uint32_t dst_ptr = reinterpret_cast<uintptr_t>(&dst.data[0]);
-
     // shared subtile is greater than or equal to register subtile
     if constexpr (ST::underlying_subtile_rows >= RT::base_tile_rows && ST::underlying_subtile_cols >= RT::base_tile_cols) {
         constexpr int register_subtiles_per_shared_subtile_row = ST::underlying_subtile_cols / RT::base_tile_cols;
@@ -772,8 +775,8 @@ __device__ inline static void store(ST &dst, const RT &src) {
                         const int col = j * RT::base_tile_cols + col_offset;
                         const uint32_t swizzled_offset = dst.swizzle({row, col});
                         const uint32_t next_swizzled_offset = dst.swizzle({next_row, col});
-                        const uint32_t addr = dst_ptr + swizzled_offset;
-                        const uint32_t next_addr = dst_ptr + next_swizzled_offset;
+                        U* addr = &dst.data[0] + (swizzled_offset / sizeof(U));
+                        U* next_addr = &dst.data[0] + (next_swizzled_offset / sizeof(U));
 
                         const int idx = l + k * RT::base_tile_stride / packing;
 
@@ -782,13 +785,13 @@ __device__ inline static void store(ST &dst, const RT &src) {
                             #pragma unroll
                             for (int jj = 0; jj < ST::subtiles_per_row; jj++) {
                                 const int shared_subtile_id = ii * ST::underlying_subtiles_per_row + jj;
-                                const int offset = shared_subtile_id * ST::underlying_subtile_bytes;
+                                const int offset = (shared_subtile_id * ST::underlying_subtile_bytes) / sizeof(U);
 
                                 const int register_row = ii * register_subtiles_per_shared_subtile_col + i;
                                 const int register_col = jj * register_subtiles_per_shared_subtile_row + j;
 
-                                U* dst_elem_ptr = (U*) (addr + offset);
-                                U* next_dst_elem_ptr = (U*) (next_addr + offset);
+                                U* dst_elem_ptr = addr + offset;
+                                U* next_dst_elem_ptr = next_addr + offset;
 
                                 dst_elem_ptr[0] = base_types::convertor<U, T>::convert(src.tiles[register_row][register_col].data[idx].x);
                                 next_dst_elem_ptr[0] = base_types::convertor<U, T>::convert(src.tiles[register_row][register_col].data[idx].y);
@@ -822,8 +825,8 @@ __device__ inline static void store(ST &dst, const RT &src) {
 
                 const uint32_t swizzled_offset = dst.swizzle({row, col});
                 const uint32_t next_swizzled_offset = dst.swizzle({next_row, col});
-                const uint32_t addr = dst_ptr + swizzled_offset + shared_base_offset;
-                const uint32_t next_addr = dst_ptr + next_swizzled_offset + shared_base_offset;
+                U* addr = &dst.data[0] + (swizzled_offset + shared_base_offset) / sizeof(U);
+                U* next_addr = &dst.data[0] + (next_swizzled_offset + shared_base_offset) / sizeof(U);
 
                 int idx = l + k * RT::base_tile_stride / packing;
 
@@ -834,10 +837,10 @@ __device__ inline static void store(ST &dst, const RT &src) {
                     for (int j = 0; j < RT::width; j++) {
                         const int shared_col = j * shared_subtiles_per_register_subtile_row;
                         const int shared_subtile_id = shared_row * ST::underlying_subtiles_per_row + shared_col;
-                        const int offset = shared_subtile_id * ST::underlying_subtile_bytes;
+                        const int offset = (shared_subtile_id * ST::underlying_subtile_bytes) / sizeof(U);
 
-                        U* dst_elem_ptr = (U*) (addr + offset);
-                        U* next_dst_elem_ptr = (U*) (next_addr + offset);
+                        U* dst_elem_ptr = addr + offset;
+                        U* next_dst_elem_ptr = next_addr + offset;
 
                         dst_elem_ptr[0] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[idx].x);
                         next_dst_elem_ptr[0] = base_types::convertor<U, T>::convert(src.tiles[i][j].data[idx].y);
