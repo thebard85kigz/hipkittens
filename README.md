@@ -1,8 +1,4 @@
-# HipKittens
 
-HipKittens is a repository in the ThunderKittens cinematic universe! This work provides minimal, opinionated C++ embedded programming primitives to help you write speedy AMD AI kernels. HipKittens is built from the hardware up: we do what the silicon tells us. 
-
-<div align="center" >
     <img src="assets/hipkittens.png" height=250 alt="HipKittens logo" style="margin-bottom:px"/> 
       <p><em>HipKittens surfing the ~wave~ (not warp).</em></p>
 </div>
